@@ -1,0 +1,982 @@
+{
+  "version": 1,
+  "exportedAt": "2026-06-05T00:46:11.334Z",
+  "records": [
+    {
+      "id": "07a8b34d-4771-48d4-8887-e1f215d87886",
+      "date": "2026-05-26",
+      "operationType": "partner",
+      "driverName": "（傭車）",
+      "clockIn": "",
+      "clockOut": "",
+      "rollCallTime": "",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "58d33845-050d-4027-bc93-c4af34c01621",
+          "runType": "partner",
+          "vehicleNumber": "",
+          "shipperName": "ニトリ",
+          "jobName": "センター間輸送",
+          "revenue": "82000",
+          "tollFee": "",
+          "startMeter": "",
+          "endMeter": "",
+          "crew": [],
+          "partnerName": "旭町運輸",
+          "partnerFee": "70520"
+        }
+      ],
+      "createdAt": "2026-05-26T10:00:00.000Z"
+    },
+    {
+      "id": "e7ad8fa3-7c6b-4957-a068-5cf7c51928ec",
+      "date": "2026-05-25",
+      "operationType": "own",
+      "driverName": "山田",
+      "clockIn": "06:00",
+      "clockOut": "16:30",
+      "rollCallTime": "06:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "909834d5-9699-419f-99f6-577c0542931a",
+          "runType": "own",
+          "vehicleNumber": "京都100あ4444",
+          "shipperName": "ニトリ",
+          "jobName": "センター間輸送",
+          "revenue": "98000",
+          "tollFee": "3000",
+          "startMeter": "8750",
+          "endMeter": "8980",
+          "crew": [
+            {
+              "id": "68c3cfa8-8ff2-4ab8-8a11-51afca2e8115",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-25T09:00:00.000Z"
+    },
+    {
+      "id": "9f1eb409-f3b7-4082-90ea-12e5241d98f1",
+      "date": "2026-05-24",
+      "operationType": "own",
+      "driverName": "田中",
+      "clockIn": "08:30",
+      "clockOut": "17:30",
+      "rollCallTime": "08:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "f9944b43-861e-4536-958d-06087c73dc59",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "69000",
+          "tollFee": "1600",
+          "startMeter": "9780",
+          "endMeter": "9930",
+          "crew": [
+            {
+              "id": "0a821ca6-cc9b-49e9-a2be-6ac531e5e85b",
+              "memberType": "employee",
+              "name": "田中",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-24T09:00:00.000Z"
+    },
+    {
+      "id": "288c8ba8-a5ce-48e7-a88c-81d330ffd419",
+      "date": "2026-05-23",
+      "operationType": "own",
+      "driverName": "大西",
+      "clockIn": "05:00",
+      "clockOut": "20:30",
+      "rollCallTime": "05:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "6ef50bf6-03e3-4cd2-b353-84dec3865245",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "74000",
+          "tollFee": "1900",
+          "startMeter": "14240",
+          "endMeter": "14400",
+          "crew": [
+            {
+              "id": "964dc614-e295-433e-bfcc-45eb6b025e89",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        },
+        {
+          "id": "97243c0b-31be-4a75-83ef-498149d08a63",
+          "runType": "own",
+          "vehicleNumber": "京都100あ3333",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "87000",
+          "tollFee": "3500",
+          "startMeter": "21170",
+          "endMeter": "21420",
+          "crew": [
+            {
+              "id": "a48741c7-9d01-4c3c-afc1-2e4b56e4fa67",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-23T09:00:00.000Z"
+    },
+    {
+      "id": "00cc2cdc-6624-421c-b44a-72bfabcaf060",
+      "date": "2026-05-22",
+      "operationType": "partner",
+      "driverName": "（傭車）",
+      "clockIn": "",
+      "clockOut": "",
+      "rollCallTime": "",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "286d7890-e06f-4b30-aaf1-bb3358f3f05e",
+          "runType": "partner",
+          "vehicleNumber": "",
+          "shipperName": "アマゾン",
+          "jobName": "夜間拠点輸送",
+          "revenue": "96000",
+          "tollFee": "",
+          "startMeter": "",
+          "endMeter": "",
+          "crew": [],
+          "partnerName": "関西ロジサービス",
+          "partnerFee": "85440"
+        }
+      ],
+      "createdAt": "2026-05-22T10:00:00.000Z"
+    },
+    {
+      "id": "f30c751a-ba83-49e4-be3f-283a85eace38",
+      "date": "2026-05-21",
+      "operationType": "own",
+      "driverName": "佐藤",
+      "clockIn": "07:00",
+      "clockOut": "18:00",
+      "rollCallTime": "07:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "c5b1acd7-8070-46a8-83a3-a90b293c0282",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "91000",
+          "tollFee": "2700",
+          "startMeter": "9550",
+          "endMeter": "9780",
+          "crew": [
+            {
+              "id": "d9fb90ed-7e5c-44c3-9955-88f7f98eb186",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-21T09:00:00.000Z"
+    },
+    {
+      "id": "05258c4a-6273-494d-bd0a-af3a7bb7a288",
+      "date": "2026-05-20",
+      "operationType": "own",
+      "driverName": "山田",
+      "clockIn": "06:30",
+      "clockOut": "17:30",
+      "rollCallTime": "06:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "b6fcf7da-3ebc-4af7-ac91-653f0862b911",
+          "runType": "own",
+          "vehicleNumber": "京都100あ4444",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "128000",
+          "tollFee": "3600",
+          "startMeter": "8480",
+          "endMeter": "8750",
+          "crew": [
+            {
+              "id": "5d0e8a01-d5d1-4b86-9135-b6fb6d9081a3",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            },
+            {
+              "id": "ae506da3-308a-4c65-a679-b2b8b1f5874f",
+              "memberType": "part_time",
+              "name": "アルバイトB",
+              "dailyCost": "15000"
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-20T09:00:00.000Z"
+    },
+    {
+      "id": "db9e8ac4-0c78-4f35-a3e2-b56a1d6d9cd5",
+      "date": "2026-05-19",
+      "operationType": "own",
+      "driverName": "田中",
+      "clockIn": "07:15",
+      "clockOut": "16:45",
+      "rollCallTime": "07:20",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "78adb3f2-8edc-4c56-ad76-4144a18ff121",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "ニトリ",
+          "jobName": "センター間輸送",
+          "revenue": "89000",
+          "tollFee": "3300",
+          "startMeter": "14020",
+          "endMeter": "14240",
+          "crew": [
+            {
+              "id": "4c9a7b4d-0722-4493-8ac1-d7d4b47508a0",
+              "memberType": "employee",
+              "name": "田中",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-19T09:00:00.000Z"
+    },
+    {
+      "id": "d1378c58-09b1-4669-895b-f1ab06ff8fed",
+      "date": "2026-05-17",
+      "operationType": "own",
+      "driverName": "佐藤",
+      "clockIn": "06:45",
+      "clockOut": "18:45",
+      "rollCallTime": "06:50",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "cce1ec71-93b4-4e65-bf87-f1f0a9d53bb9",
+          "runType": "own",
+          "vehicleNumber": "京都100あ3333",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "82000",
+          "tollFee": "2600",
+          "startMeter": "20980",
+          "endMeter": "21170",
+          "crew": [
+            {
+              "id": "50f8eea2-8d4f-46de-b1a3-f419b721d0db",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        },
+        {
+          "id": "a12ab1c8-40be-4346-a507-ec4d42ca83e7",
+          "runType": "own",
+          "vehicleNumber": "京都100あ4444",
+          "shipperName": "アマゾン",
+          "jobName": "夜間拠点輸送",
+          "revenue": "102000",
+          "tollFee": "4800",
+          "startMeter": "8210",
+          "endMeter": "8480",
+          "crew": [
+            {
+              "id": "b07afad6-de0e-4c56-888f-fe4285e119d1",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-17T09:00:00.000Z"
+    },
+    {
+      "id": "54880a55-89f0-4b2d-b1be-1d201ad62f0a",
+      "date": "2026-05-16",
+      "operationType": "own",
+      "driverName": "大西",
+      "clockIn": "05:30",
+      "clockOut": "16:00",
+      "rollCallTime": "05:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "6f2f5786-9b33-4da3-934c-0d364d4a5d43",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "118000",
+          "tollFee": "4200",
+          "startMeter": "9280",
+          "endMeter": "9550",
+          "crew": [
+            {
+              "id": "1f284802-004d-459d-ab1f-52423705bde5",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-16T09:00:00.000Z"
+    },
+    {
+      "id": "b116de70-afef-4710-ba7c-8b9350d86d12",
+      "date": "2026-05-15",
+      "operationType": "partner",
+      "driverName": "（傭車）",
+      "clockIn": "",
+      "clockOut": "",
+      "rollCallTime": "",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "54624c9c-eae8-41ad-bfad-2b4821fc3a39",
+          "runType": "partner",
+          "vehicleNumber": "",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "70000",
+          "tollFee": "",
+          "startMeter": "",
+          "endMeter": "",
+          "crew": [],
+          "partnerName": "旭町運輸",
+          "partnerFee": "59500"
+        }
+      ],
+      "createdAt": "2026-05-15T10:00:00.000Z"
+    },
+    {
+      "id": "2f123c12-49be-4d45-8a89-82502805f066",
+      "date": "2026-05-14",
+      "operationType": "own",
+      "driverName": "田中",
+      "clockIn": "08:00",
+      "clockOut": "17:00",
+      "rollCallTime": "08:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "f839d697-b7e1-499d-b30d-2c53f7754fb2",
+          "runType": "own",
+          "vehicleNumber": "京都100あ3333",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "76000",
+          "tollFee": "1800",
+          "startMeter": "20790",
+          "endMeter": "20980",
+          "crew": [
+            {
+              "id": "312610b7-5b49-4677-8e73-cc8dc0b01609",
+              "memberType": "employee",
+              "name": "田中",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-14T09:00:00.000Z"
+    },
+    {
+      "id": "fa30c537-7965-486a-a9ab-7fd6e6122c5b",
+      "date": "2026-05-13",
+      "operationType": "own",
+      "driverName": "佐藤",
+      "clockIn": "06:15",
+      "clockOut": "19:30",
+      "rollCallTime": "06:20",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "f6dc86a9-bedf-4275-bffc-c64dd52ffb76",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "88000",
+          "tollFee": "3100",
+          "startMeter": "13510",
+          "endMeter": "13760",
+          "crew": [
+            {
+              "id": "49474770-fcea-4fae-a605-87aea4b37eac",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        },
+        {
+          "id": "9dda5cf2-3c4e-4dd0-bead-f39bb04e1d29",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "105000",
+          "tollFee": "2900",
+          "startMeter": "13760",
+          "endMeter": "14020",
+          "crew": [
+            {
+              "id": "03a817ad-c073-4263-b8f5-e456541f6c07",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-13T09:00:00.000Z"
+    },
+    {
+      "id": "3a331456-a525-4df6-8187-b74506f61406",
+      "date": "2026-05-12",
+      "operationType": "own",
+      "driverName": "山田",
+      "clockIn": "07:30",
+      "clockOut": "18:00",
+      "rollCallTime": "07:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "69af16b5-aa9f-43fd-8f54-9f57deac55b8",
+          "runType": "own",
+          "vehicleNumber": "京都100あ4444",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "68000",
+          "tollFee": "2200",
+          "startMeter": "8060",
+          "endMeter": "8210",
+          "crew": [
+            {
+              "id": "ed8a6ff6-b8b5-4ba9-b177-134b119bd437",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-12T09:00:00.000Z"
+    },
+    {
+      "id": "f242e44c-0d39-40ac-9e96-7fa0b1689aa5",
+      "date": "2026-05-11",
+      "operationType": "partner",
+      "driverName": "（傭車）",
+      "clockIn": "",
+      "clockOut": "",
+      "rollCallTime": "",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "f7be097f-4477-4dee-aaad-5973279375dd",
+          "runType": "partner",
+          "vehicleNumber": "",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "125000",
+          "tollFee": "",
+          "startMeter": "",
+          "endMeter": "",
+          "crew": [],
+          "partnerName": "関西ロジサービス",
+          "partnerFee": "112500"
+        }
+      ],
+      "createdAt": "2026-05-11T10:00:00.000Z"
+    },
+    {
+      "id": "576a9eb6-d9a4-4aa7-b666-190cd05088ab",
+      "date": "2026-05-10",
+      "operationType": "own",
+      "driverName": "大西",
+      "clockIn": "06:00",
+      "clockOut": "15:30",
+      "rollCallTime": "06:05",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "d46ba111-6abc-4954-8e52-f08193c45867",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "ニトリ",
+          "jobName": "センター間輸送",
+          "revenue": "92000",
+          "tollFee": "3400",
+          "startMeter": "13280",
+          "endMeter": "13510",
+          "crew": [
+            {
+              "id": "a53359b5-7f25-4cd8-9e43-af99e07812ce",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-10T09:00:00.000Z"
+    },
+    {
+      "id": "0caa7be5-08ff-44de-9512-a880cec96794",
+      "date": "2026-05-09",
+      "operationType": "own",
+      "driverName": "田中",
+      "clockIn": "07:00",
+      "clockOut": "16:30",
+      "rollCallTime": "07:30",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "6dff69f1-6317-48e6-b0af-c952f07bafa8",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "72000",
+          "tollFee": "1500",
+          "startMeter": "9120",
+          "endMeter": "9280",
+          "crew": [
+            {
+              "id": "045a2035-04b7-41fd-9935-8a1ab3ef45f4",
+              "memberType": "employee",
+              "name": "田中",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-09T09:00:00.000Z"
+    },
+    {
+      "id": "ff970de7-cd56-470d-85d1-f46aa7bb2f9b",
+      "date": "2026-05-08",
+      "operationType": "own",
+      "driverName": "佐藤",
+      "clockIn": "04:30",
+      "clockOut": "22:00",
+      "rollCallTime": "04:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "83d3fdec-c1fd-4294-9725-01f831fad50d",
+          "runType": "own",
+          "vehicleNumber": "京都100あ3333",
+          "shipperName": "アマゾン",
+          "jobName": "夜間拠点輸送",
+          "revenue": "150000",
+          "tollFee": "12000",
+          "startMeter": "20340",
+          "endMeter": "20790",
+          "crew": [
+            {
+              "id": "56f6e67d-fe01-497b-bd7f-68027f311118",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-08T09:00:00.000Z"
+    },
+    {
+      "id": "35087c00-e6ed-4a8b-8a3d-69a81072f546",
+      "date": "2026-05-07",
+      "operationType": "partner",
+      "driverName": "（傭車）",
+      "clockIn": "",
+      "clockOut": "",
+      "rollCallTime": "",
+      "dailyReportSubmitted": false,
+      "trips": [
+        {
+          "id": "baa37a5d-a2d7-450d-9dd8-d3c66996e338",
+          "runType": "partner",
+          "vehicleNumber": "",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "88000",
+          "tollFee": "",
+          "startMeter": "",
+          "endMeter": "",
+          "crew": [],
+          "partnerName": "旭町運輸",
+          "partnerFee": "77440"
+        }
+      ],
+      "createdAt": "2026-05-07T10:00:00.000Z"
+    },
+    {
+      "id": "015f16cb-919e-44ef-94cb-6ec0de30fad3",
+      "date": "2026-05-06",
+      "operationType": "own",
+      "driverName": "山田",
+      "clockIn": "07:00",
+      "clockOut": "17:00",
+      "rollCallTime": "07:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "54cd5989-654f-41f3-98cf-58ba4dae2205",
+          "runType": "own",
+          "vehicleNumber": "京都100あ4444",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "135000",
+          "tollFee": "3800",
+          "startMeter": "7800",
+          "endMeter": "8060",
+          "crew": [
+            {
+              "id": "f706e596-ba6c-4555-91c7-c48dc827f6da",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            },
+            {
+              "id": "abec0f81-476a-4a49-bf72-0415b0e7df6d",
+              "memberType": "part_time",
+              "name": "アルバイトA",
+              "dailyCost": "15000"
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-06T09:00:00.000Z"
+    },
+    {
+      "id": "65a2b2e2-bf97-4112-b640-680946ebb2fc",
+      "date": "2026-05-05",
+      "operationType": "own",
+      "driverName": "大西",
+      "clockIn": "05:45",
+      "clockOut": "20:00",
+      "rollCallTime": "05:50",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "5bb8fe95-5a66-40e1-8e83-36575ed04295",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "110000",
+          "tollFee": "5200",
+          "startMeter": "12920",
+          "endMeter": "13280",
+          "crew": [
+            {
+              "id": "68e83aa4-88b9-4cfe-abdb-e3a29c94f96f",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        },
+        {
+          "id": "3d9cd6e3-3b51-413c-bc61-5860d4fc4b04",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "アマゾン",
+          "jobName": "夜間拠点輸送",
+          "revenue": "98000",
+          "tollFee": "4100",
+          "startMeter": "5600",
+          "endMeter": "5890",
+          "crew": [
+            {
+              "id": "b3865b1c-b332-46e9-b640-91a8d1c3f474",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-05T09:00:00.000Z"
+    },
+    {
+      "id": "d885f69b-d71d-467b-b49e-dd2adb5b8bcd",
+      "date": "2026-05-04",
+      "operationType": "own",
+      "driverName": "山田",
+      "clockIn": "06:00",
+      "clockOut": "19:00",
+      "rollCallTime": "06:10",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "23295d93-392f-42e4-a6a3-17f4a86eb22d",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "78000",
+          "tollFee": "2100",
+          "startMeter": "12580",
+          "endMeter": "12750",
+          "crew": [
+            {
+              "id": "035acc84-2a87-48b4-bb1e-5599c4c5bd0e",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        },
+        {
+          "id": "f4d27b09-40ac-490f-af40-39cbe1ceb4d8",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "ニトリ",
+          "jobName": "センター間輸送",
+          "revenue": "65000",
+          "tollFee": "1800",
+          "startMeter": "12750",
+          "endMeter": "12920",
+          "crew": [
+            {
+              "id": "44786458-df7d-4002-ade6-62acce2cec74",
+              "memberType": "employee",
+              "name": "山田",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-04T09:00:00.000Z"
+    },
+    {
+      "id": "05293b82-d3e5-4672-b90d-2cf410d33826",
+      "date": "2026-05-03",
+      "operationType": "own",
+      "driverName": "田中",
+      "clockIn": "08:00",
+      "clockOut": "18:00",
+      "rollCallTime": "08:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "28d36494-3330-41e2-a6ee-0e808257d172",
+          "runType": "own",
+          "vehicleNumber": "京都100あ3333",
+          "shipperName": "アマゾン",
+          "jobName": "宅配",
+          "revenue": "95000",
+          "tollFee": "2800",
+          "startMeter": "20100",
+          "endMeter": "20340",
+          "crew": [
+            {
+              "id": "109764c6-8540-4b1c-a40b-79f8663fb559",
+              "memberType": "employee",
+              "name": "田中",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-03T09:00:00.000Z"
+    },
+    {
+      "id": "9a0e5a99-f903-4d57-a374-fff1c119d4f0",
+      "date": "2026-05-02",
+      "operationType": "own",
+      "driverName": "佐藤",
+      "clockIn": "07:00",
+      "clockOut": "17:30",
+      "rollCallTime": "07:05",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "6fa48673-570f-4413-9543-b3ab01f65435",
+          "runType": "own",
+          "vehicleNumber": "京都100あ2222",
+          "shipperName": "ニトリ",
+          "jobName": "家具配送",
+          "revenue": "120000",
+          "tollFee": "4500",
+          "startMeter": "8900",
+          "endMeter": "9120",
+          "crew": [
+            {
+              "id": "1f2f65bd-3b59-4266-97a5-d04afa1c9fe4",
+              "memberType": "employee",
+              "name": "佐藤",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-02T09:00:00.000Z"
+    },
+    {
+      "id": "dac3a8f1-6c21-4115-b8f0-eedb81f26b12",
+      "date": "2026-05-01",
+      "operationType": "own",
+      "driverName": "大西",
+      "clockIn": "06:30",
+      "clockOut": "16:00",
+      "rollCallTime": "06:35",
+      "dailyReportSubmitted": true,
+      "trips": [
+        {
+          "id": "ae64ff96-fd49-45de-8b2f-c8c13ba7d613",
+          "runType": "own",
+          "vehicleNumber": "京都100あ1111",
+          "shipperName": "エフピコ",
+          "jobName": "食品トレー配送",
+          "revenue": "85000",
+          "tollFee": "3200",
+          "startMeter": "12400",
+          "endMeter": "12580",
+          "crew": [
+            {
+              "id": "5ba20f8d-0660-428e-9f47-2821dec66818",
+              "memberType": "employee",
+              "name": "大西",
+              "dailyCost": ""
+            }
+          ],
+          "partnerName": "",
+          "partnerFee": ""
+        }
+      ],
+      "createdAt": "2026-05-01T09:00:00.000Z"
+    }
+  ],
+  "masters": {
+    "drivers": [
+      "大西",
+      "山田",
+      "佐藤",
+      "田中"
+    ],
+    "partners": [
+      "旭町運輸",
+      "関西ロジサービス"
+    ],
+    "vehicles": [
+      "京都100あ1111",
+      "京都100あ2222",
+      "京都100あ3333",
+      "京都100あ4444"
+    ],
+    "shippers": [
+      "ニトリ",
+      "アマゾン",
+      "エフピコ"
+    ],
+    "shipperJobs": {
+      "ニトリ": [
+        "家具配送",
+        "センター間輸送"
+      ],
+      "アマゾン": [
+        "宅配",
+        "夜間拠点輸送"
+      ],
+      "エフピコ": [
+        "食品トレー配送"
+      ]
+    },
+    "employeeSalaries": {
+      "大西": 450000,
+      "山田": 350000,
+      "佐藤": 300000,
+      "田中": 280000
+    },
+    "defaultPartTimeDaily": 15000,
+    "defaultDispatchDaily": 15000
+  }
+}
