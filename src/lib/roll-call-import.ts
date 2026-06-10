@@ -223,6 +223,7 @@ export function applyRollCallEntriesToRecords(
   masters: MasterData;
   applied: number;
   touchedDayKeys: Set<string>;
+  vehicleUpgrades: VehicleUpgrade[];
 } {
   let nextRecords = [...records];
   let nextMasters = masters;

@@ -267,7 +267,7 @@ export function buildDriverDayDetailRows(
 
   const monthRecords = records.filter((r) => recordInMonth(r.date, yearMonth));
 
-  const dayRows = [...byDate.entries()]
+  const dayRows: DriverDayDetailRow[] = [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, trips]) => {
       const primaryTrip = trips[0]!;

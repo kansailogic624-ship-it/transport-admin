@@ -78,7 +78,14 @@ const fmRecord = makeRecord({
   driverName: "山本剛志",
   timecardIn: "05:50",
   timecardOut: "18:00",
-  fusionDispatchOptions: [{ dispatchName: "配車A", revenue: "50000" }],
+  fusionDispatchOptions: [
+    {
+      dispatchName: "配車A",
+      revenue: "50000",
+      shipperName: "テスト荷主",
+      vehicleNumber: "京都100あ1234",
+    },
+  ],
   trips: [
     {
       id: "t2",

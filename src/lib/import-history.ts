@@ -120,7 +120,7 @@ export function hasImportLinkage(history: ImportHistory): boolean {
 
     history.affectedRecordIds.length > 0 ||
 
-    history.affectedDayKeys.length > 0
+    (history.affectedDayKeys?.length ?? 0) > 0
 
   );
 

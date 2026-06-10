@@ -87,7 +87,7 @@ export function enrichShipperJobMarginalProfit(
     });
 
     const shipperCommon = enrichedJobs.reduce(
-      (sum, job) => sum + job.allocatedCommonExpense,
+      (sum, job) => sum + (job.allocatedCommonExpense ?? 0),
       0,
     );
 
@@ -107,9 +107,15 @@ export function enrichShipperJobMarginalProfit(
 }
 
 export function isMarginalProfitWarning(
-  row: MarginalProfitFields,
+  row: {
+    netProfit?: number;
+    profitMargin?: number;
+  },
   targetMargin = TARGET_NET_PROFIT_MARGIN,
 ): boolean {
+  if (row.netProfit === undefined || row.profitMargin === undefined) {
+    return false;
+  }
   return row.netProfit < 0 || row.profitMargin < targetMargin;
 }
 
@@ -134,9 +140,14 @@ export function sortShipperAnalysisRows(
 
   // worstPerTrip: 1台あたり純利益が低い順（荷主・業務とも）
   for (const shipper of copy) {
-    shipper.jobs.sort((a, b) => a.netProfitPerTrip - b.netProfitPerTrip);
+    shipper.jobs.sort(
+      (a, b) =>
+        (a.netProfitPerTrip ?? 0) - (b.netProfitPerTrip ?? 0),
+    );
   }
-  return copy.sort((a, b) => a.netProfitPerTrip - b.netProfitPerTrip);
+  return copy.sort(
+    (a, b) => (a.netProfitPerTrip ?? 0) - (b.netProfitPerTrip ?? 0),
+  );
 }
 
 /** 展開中荷主のワースト業務（1台あたり純利益最小） */
@@ -145,6 +156,6 @@ export function worstJobInShipper(
 ): JobAnalysisRow | null {
   if (shipper.jobs.length === 0) return null;
   return shipper.jobs.reduce((worst, job) =>
-    job.netProfitPerTrip < worst.netProfitPerTrip ? job : worst,
+    (job.netProfitPerTrip ?? 0) < (worst.netProfitPerTrip ?? 0) ? job : worst,
   );
 }

@@ -25,9 +25,12 @@ export type FusionImportDetailRow = {
   recordId: string;
   date: string;
   driverName: string;
+  vehicleNumber: string;
   shipperName: string;
   jobName: string;
   revenue: string;
+  startMeter: string;
+  endMeter: string;
   dropCount: string;
 };
 
@@ -93,9 +96,12 @@ function fusionRowsFromRecord(record: DailyRecord): FusionImportDetailRow[] {
         recordId: record.id,
         date: record.date,
         driverName: record.driverName || "—",
+        vehicleNumber: "—",
         shipperName: "—",
         jobName: "（業務データなし）",
         revenue: "—",
+        startMeter: "—",
+        endMeter: "—",
         dropCount: "—",
       },
     ];
@@ -106,6 +112,7 @@ function fusionRowsFromRecord(record: DailyRecord): FusionImportDetailRow[] {
     recordId: record.id,
     date: record.date,
     driverName: record.driverName || "—",
+    vehicleNumber: displayVehicleNumber(trip.vehicleNumber) || "—",
     shipperName: trip.shipperName?.trim() || "—",
     jobName:
       trip.jobName?.trim() ||
@@ -113,6 +120,8 @@ function fusionRowsFromRecord(record: DailyRecord): FusionImportDetailRow[] {
       trip.reportSourceLabel?.trim() ||
       "—",
     revenue: trip.revenue?.trim() ? formatYen(trip.revenue) : "—",
+    startMeter: formatMeter(trip.startMeter),
+    endMeter: formatMeter(trip.endMeter),
     dropCount: formatDropCount(trip),
   }));
 }

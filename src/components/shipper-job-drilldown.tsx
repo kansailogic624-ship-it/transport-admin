@@ -112,7 +112,7 @@ function MarginalWarningBadge({ row }: { row: JobAnalysisRow | ShipperAnalysisRo
   if (
     row.netProfit === undefined ||
     row.profitMargin === undefined ||
-    !isMarginalProfitWarning(row as JobAnalysisRow)
+    !isMarginalProfitWarning(row)
   ) {
     return null;
   }
@@ -135,7 +135,7 @@ function marginalCellClass(row: JobAnalysisRow | ShipperAnalysisRow): string {
   if (
     row.netProfit !== undefined &&
     row.profitMargin !== undefined &&
-    isMarginalProfitWarning(row as JobAnalysisRow)
+    isMarginalProfitWarning(row)
   ) {
     return "bg-red-50/80 text-red-700";
   }
@@ -260,7 +260,8 @@ export function ShipperJobDrilldown({
               const worstJob = worstJobInShipper(shipper);
               const bestJob = shipper.jobs.reduce<JobAnalysisRow | null>(
                 (best, job) =>
-                  !best || job.netProfitPerTrip > best.netProfitPerTrip
+                  !best ||
+                  (job.netProfitPerTrip ?? 0) > (best.netProfitPerTrip ?? 0)
                     ? job
                     : best,
                 null,
@@ -331,13 +332,17 @@ export function ShipperJobDrilldown({
                     <TableRow className="bg-slate-50/50 hover:bg-slate-50/50">
                       <TableCell colSpan={8} className="py-2 text-xs">
                         <div className="flex flex-wrap gap-x-6 gap-y-1 pl-10 text-muted-foreground">
-                          {bestJob && bestJob.netProfitPerTrip > 0 && (
+                          {bestJob &&
+                            (bestJob.netProfitPerTrip ?? 0) > 0 && (
                             <span>
                               <span className="font-medium text-emerald-700">
                                 収益エンジン
                               </span>
                               ：{bestJob.jobName}（1台{" "}
-                              {formatYen(bestJob.netProfitPerTrip)} / 利益率{" "}
+                              {formatYen(
+                                metricOrZero(bestJob.netProfitPerTrip),
+                              )}{" "}
+                              / 利益率{" "}
                               {formatPct(metricOrZero(bestJob.profitMargin))}）
                             </span>
                           )}
@@ -347,7 +352,10 @@ export function ShipperJobDrilldown({
                                 要改善
                               </span>
                               ：{worstJob.jobName}（1台{" "}
-                              {formatYen(worstJob.netProfitPerTrip)} / 利益率{" "}
+                              {formatYen(
+                                metricOrZero(worstJob.netProfitPerTrip),
+                              )}{" "}
+                              / 利益率{" "}
                               {formatPct(metricOrZero(worstJob.profitMargin))}）
                             </span>
                           )}
