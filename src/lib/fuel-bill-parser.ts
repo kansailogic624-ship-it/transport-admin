@@ -1,8 +1,6 @@
 /**
  * 有限会社加島様 燃料代請求書テキスト解析
- *
- * カードNo.（例: 9766 00101）をトリガーに、次のカードまでの金額を合算。
- * 軽油税等は燃料小計に対する比率で車両別に按分。
+ * 車番ごとの集計（車番計・数量計）のみを抽出する。
  */
 
 import { safeNumber } from "./currency-format";
@@ -15,12 +13,16 @@ import type { BillType } from "./types";
 
 export const KASHIMA_VENDOR = "有限会社加島";
 
-export type ParsedFuelVehicleEntry = {
-  /** カード識別番号（生テキスト） */
-  cardKey: string;
+/** 車番ごとの集計1件 */
+export type FuelVehicleSummary = {
+  vehicleCode: string;
+  totalQuantity: number;
+  totalAmount: number;
+};
+
+export type ParsedFuelVehicleEntry = FuelVehicleSummary & {
   vehicleNumber: string;
   workDescription: string;
-  totalAmount: number;
 };
 
 export type ParsedFuelBill = {
@@ -33,14 +35,29 @@ export type ParsedFuelBill = {
 };
 
 export function isKashimaBillText(text: string, fileName?: string): boolean {
-  if (/加島|KASHIMA/i.test(text)) return true;
-  if (/車番計/.test(text) && /軽油/.test(text)) return true;
-  if (/01-00-13340|上津屋中堤|13340/.test(text)) return true;
-  if (fileName && /13340|加島|KASHIMA/i.test(fileName)) return true;
+  const compact = text.replace(/\s/g, "");
+
+  const issuerIsKashima =
+    /有限会社加島(?:様)?(?:燃料|軽油|車番計|COMET|ＣＯＭＥＴ)/i.test(compact) ||
+    /(?:燃料|軽油|車番計).{0,30}有限会社加島/i.test(compact);
+
+  const fuelLayout =
+    /車番計/.test(text) &&
+    /軽油/.test(text) &&
+    (/00101|13340|カード/.test(text) || /COMET|ＣＯＭＥＴ/i.test(text));
+
+  if (issuerIsKashima || fuelLayout) return true;
+  if (/01-00-13340|上津屋中堤|13340-01/.test(text)) return true;
+  if (
+    fileName &&
+    /13340|KASHIMA/i.test(fileName) &&
+    !/安井|ダイサブ|ふそう|整備/i.test(fileName)
+  ) {
+    return true;
+  }
   return false;
 }
 
-/** ファイル名から請求月を推定（例: 13340-01-20260520-... → 2026-05） */
 export function parseBillingMonthFromFuelFilename(
   fileName: string,
 ): string | null {
@@ -62,7 +79,6 @@ function normalizeFuelText(text: string): string {
     .replace(/^-- \d+ of \d+ --$/gm, "");
 }
 
-/** 4桁車番を正規化（0600 00101 → 0600） */
 function normalizeShabanKey(raw: string): string {
   const t = raw.trim();
   const four = t.match(/^(\d{4})/);
@@ -70,7 +86,6 @@ function normalizeShabanKey(raw: string): string {
   return t;
 }
 
-/** ページヘッダー等のノイズ行 */
 function isFuelNoiseLine(line: string): boolean {
   return (
     /^(33|2|0|01-00-13340|000103|5064)$/.test(line) ||
@@ -82,9 +97,9 @@ function isFuelNoiseLine(line: string): boolean {
   );
 }
 
-/** 成形済みテキスト（車番： / 車番計：）の解析 */
-function parseSimplifiedFuelFormat(text: string): Map<string, number> {
-  const totals = new Map<string, number>();
+/** 成形済みテキスト（車番： / 車番計：） */
+function parseSimplifiedFuelFormat(text: string): FuelVehicleSummary[] {
+  const results: FuelVehicleSummary[] = [];
   let currentKey: string | null = null;
 
   for (const raw of text.split("\n")) {
@@ -104,45 +119,50 @@ function parseSimplifiedFuelFormat(text: string): Map<string, number> {
       );
       const yen = amounts.length > 0 ? Math.max(...amounts) : 0;
       if (yen >= 100) {
-        totals.set(currentKey, (totals.get(currentKey) ?? 0) + yen);
+        results.push({
+          vehicleCode: currentKey,
+          totalQuantity: 0,
+          totalAmount: yen,
+        });
       }
       currentKey = null;
     }
   }
 
-  return totals;
+  return results;
 }
 
-/** 日次給油明細行か（金額集計対象外・車番追跡のみ） */
-function isFuelDetailLine(line: string): boolean {
+/** 日次給油明細行（車番計抽出時はスキップ・車両コード追跡のみ） */
+function isDailyFuelDetailLine(line: string): boolean {
   const s = line.replace(/\u3000/g, " ").trim();
-  if (/^\d{2}\/\d{2}\s+\d{4}\s+\d{5}\s+軽油/.test(s)) return true;
-  if (/^\d+\s+\d{2}\/\d{2}\s+[\d,.]+\s+[\d,]+\s+\d{4}\s+\d{5}\s+軽油/.test(s))
-    return true;
-  return false;
+  return /^\d{2}\/\d{2}\s+\d{4}\s+\d{5}\s+/.test(s);
 }
 
-/** 給油明細行から4桁車番を抽出（伝票NO・給油SSは無視） */
-function extractShabanFromDetailLine(line: string): string | null {
+/** 行から4桁車両コードを検出（明細行から車番ブロック紐付け用） */
+function peekVehicleCodeFromLine(line: string): string | null {
   const s = line.replace(/\u3000/g, " ").trim();
   const m = s.match(/(\d{4})\s+\d{5}\s+軽油/);
   return m ? m[1]! : null;
 }
 
-/** 軽油税行（集計対象外） */
 function isFuelTaxLine(line: string): boolean {
   return /\*+\s*軽油税/.test(line) && !/車番計/.test(line);
 }
 
-/**
- * 車番計行の合計金額のみ抽出（伝票NO・日次明細金額は無視）
- * 対応形式:
- *   ***** 車番計 221,202  （PDF抽出）
- *   221,202 ***** 車番計  （テキスト貼付）
- */
+function isVehicleShabanKeiLine(line: string): boolean {
+  return /車番計/.test(line) && !/軽油税合計|税込合計|標準税率/.test(line);
+}
+
+function parseFuelTaxQuantity(line: string): number | null {
+  const s = line.replace(/\u3000/g, " ").trim();
+  const m = s.match(/\*+\s*軽油税\s+([\d,.]+)/);
+  if (!m) return null;
+  const n = parseFloat(m[1]!.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
 function parseShabanKeiAmount(line: string, prevLine?: string): number | null {
-  if (!/車番計/.test(line) || /軽油税合計|税込合計|標準税率/.test(line))
-    return null;
+  if (!isVehicleShabanKeiLine(line)) return null;
 
   const normalized = line.replace(/\u3000/g, " ").trim();
 
@@ -170,35 +190,140 @@ function parseShabanKeiAmount(line: string, prevLine?: string): number | null {
   return null;
 }
 
-/** 車番計のみから車両別合計を抽出（日次明細はすべてスキップ） */
-function parseVehicleTotalsFromShabanKei(text: string): Map<string, number> {
-  const totals = new Map<string, number>();
-  const lines = text.split("\n");
-  let currentShaban: string | null = null;
+export type ShabanKeiBlock = {
+  vehicleCode: string;
+  taxLine: string | null;
+  keiLine: string;
+  totalQuantity: number;
+  totalAmount: number;
+};
+
+/**
+ * PDF全文から「車番計」集計ブロックのみを収集（日次明細は無視）。
+ * ルールベース解析・AI入力の共通ソース。
+ */
+export function collectShabanKeiBlocks(text: string): ShabanKeiBlock[] {
+  const normalized = normalizeFuelText(text);
+  const lines = normalized.split("\n");
+  const results: ShabanKeiBlock[] = [];
+  let currentCode: string | null = null;
+  let pendingTaxLine: string | null = null;
+  let pendingQuantity = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim().replace(/\u3000/g, " ");
     if (!line || isFuelNoiseLine(line) || /^─/.test(line)) continue;
 
-    if (isFuelDetailLine(line)) {
-      const shaban = extractShabanFromDetailLine(line);
-      if (shaban) currentShaban = shaban;
+    if (isDailyFuelDetailLine(line)) {
+      const code = peekVehicleCodeFromLine(line);
+      if (code) currentCode = code;
       continue;
     }
 
-    if (isFuelTaxLine(line)) continue;
+    const code = peekVehicleCodeFromLine(line);
+    if (code) currentCode = code;
 
-    if (/車番計/.test(line)) {
+    if (isFuelTaxLine(line)) {
+      pendingTaxLine = line;
+      const qty = parseFuelTaxQuantity(line);
+      if (qty !== null) pendingQuantity = qty;
+      continue;
+    }
+
+    if (isVehicleShabanKeiLine(line)) {
       const prev = i > 0 ? lines[i - 1]!.trim() : undefined;
       const amount = parseShabanKeiAmount(line, prev);
-      if (amount !== null && currentShaban) {
-        totals.set(currentShaban, amount);
+      if (amount !== null && currentCode) {
+        results.push({
+          vehicleCode: currentCode,
+          taxLine: pendingTaxLine,
+          keiLine: line,
+          totalQuantity: pendingQuantity,
+          totalAmount: amount,
+        });
       }
-      currentShaban = null;
+      currentCode = null;
+      pendingTaxLine = null;
+      pendingQuantity = 0;
     }
   }
 
-  return totals;
+  return results;
+}
+
+/** AI/OCR用: 車番計ブロックだけを切り出したテキスト（日次明細を完全除外） */
+export function extractShabanKeiBlocksForAi(text: string): string {
+  const blocks = collectShabanKeiBlocks(text);
+  if (blocks.length === 0) return "";
+
+  const header =
+    "以下は加島燃料代請求書から切り出した「車番計」集計ブロックのみです。日次給油明細は含みません。\n";
+
+  const body = blocks
+    .map((b) => {
+      const lines = [`車番: ${b.vehicleCode}`];
+      if (b.taxLine) lines.push(b.taxLine);
+      lines.push(b.keiLine);
+      return lines.join("\n");
+    })
+    .join("\n\n---\n\n");
+
+  return `${header}\n${body}`;
+}
+
+/** 車番計ブロック件数（ルール vs AI の充足判定用） */
+export function countShabanKeiBlocks(text: string): number {
+  return collectShabanKeiBlocks(text).length;
+}
+
+const FUEL_TAX_LINE_RE =
+  /^\*+\s+軽油税\s+(?!合計)([\d,.]+)\s+([\d,.]+)\s+([\d,]+)/;
+const FUEL_TAX_TOTAL_LINE_RE =
+  /^\*+\s+軽油税合計\s+([\d,.]+)\s+([\d,.]+)\s+([\d,]+)/;
+
+function parseFuelTaxUnitRate(line: string): number | null {
+  const s = line.replace(/\u3000/g, " ").trim();
+  const m = s.match(FUEL_TAX_LINE_RE) ?? s.match(FUEL_TAX_TOTAL_LINE_RE);
+  if (!m) return null;
+  const rate = parseFloat(m[2]!.replace(/,/g, ""));
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 200) return null;
+  return rate;
+}
+
+/**
+ * PDFテキストから軽油税の単価（円/L）を自動判別。
+ * 「***** 軽油税 数量 単価 金額」行の単価列を収集し、最頻値を返す。
+ */
+export function detectFuelTaxRateFromText(text: string): number | null {
+  const normalized = normalizeFuelText(text);
+  const counts = new Map<number, number>();
+
+  for (const raw of normalized.split("\n")) {
+    const rate = parseFuelTaxUnitRate(raw.trim());
+    if (rate === null) continue;
+    counts.set(rate, (counts.get(rate) ?? 0) + 1);
+  }
+
+  if (counts.size === 0) return null;
+
+  let bestRate: number | null = null;
+  let bestCount = 0;
+  for (const [rate, count] of counts) {
+    if (count > bestCount) {
+      bestCount = count;
+      bestRate = rate;
+    }
+  }
+  return bestRate;
+}
+
+/** PDFテキストから車番計・軽油税（数量計）ブロックを抽出 */
+export function parseVehicleSummariesFromBill(text: string): FuelVehicleSummary[] {
+  return collectShabanKeiBlocks(text).map((b) => ({
+    vehicleCode: b.vehicleCode,
+    totalQuantity: b.totalQuantity,
+    totalAmount: b.totalAmount,
+  }));
 }
 
 function extractLineAmount(line: string): number {
@@ -290,12 +415,6 @@ function parseBillingMeta(text: string): {
   return { billingMonth, issueDate, totalAmount };
 }
 
-/**
- * 加島様燃料代請求テキストを車両別に集計
- *
- * 優先: 「車番計」行の金額（軽油税込み）を直前ブロックの車番に紐付け
- * フォールバック: 給油明細行の金額を車番ごとに合算 + 軽油税按分
- */
 export function parseKashimaFuelBill(
   text: string,
   fileName?: string,
@@ -313,21 +432,19 @@ export function parseKashimaFuelBill(
     if (d) issueDate = `${d[1]}-${d[2]}-${d[3]}`;
   }
 
-  let vehicleTotals = parseSimplifiedFuelFormat(normalized);
-
-  if (vehicleTotals.size === 0) {
-    vehicleTotals = parseVehicleTotalsFromShabanKei(normalized);
+  let summaries = parseSimplifiedFuelFormat(normalized);
+  if (summaries.length === 0) {
+    summaries = parseVehicleSummariesFromBill(normalized);
   }
+  summaries = mergeFuelVehicleSummaries(summaries);
 
-  const vehicles: ParsedFuelVehicleEntry[] = [...vehicleTotals.entries()]
-    .filter(([, amt]) => amt > 0)
-    .map(([cardKey, totalAmount]) => ({
-      cardKey,
+  const vehicles: ParsedFuelVehicleEntry[] = summaries
+    .filter((v) => v.totalAmount > 0)
+    .map((v) => ({
+      ...v,
       vehicleNumber: "",
-      workDescription: "燃料代（軽油・ガソリン）",
-      totalAmount,
-    }))
-    .sort((a, b) => b.totalAmount - a.totalAmount);
+      workDescription: fuelVehicleWorkDescription(v),
+    }));
 
   const computedTotal = vehicles.reduce((s, v) => s + v.totalAmount, 0);
 
@@ -341,31 +458,51 @@ export function parseKashimaFuelBill(
   };
 }
 
-/** 同一カードキーの重複をマージ */
-export function mergeFuelVehicleEntries(
-  entries: ParsedFuelVehicleEntry[],
-): ParsedFuelVehicleEntry[] {
-  const map = new Map<string, ParsedFuelVehicleEntry>();
+export function fuelVehicleWorkDescription(v: FuelVehicleSummary): string {
+  const qty =
+    v.totalQuantity > 0
+      ? `${v.totalQuantity.toLocaleString("ja-JP", { maximumFractionDigits: 2 })}L`
+      : "";
+  return ["燃料代", qty, "車番計"].filter(Boolean).join(" ");
+}
+
+/** 同一車番をマージしつつ、PDF原本の登場順を維持 */
+export function mergeFuelVehicleSummaries(
+  entries: FuelVehicleSummary[],
+): FuelVehicleSummary[] {
+  const map = new Map<string, FuelVehicleSummary>();
+  const order: string[] = [];
   for (const e of entries) {
-    const key = e.cardKey.trim();
+    const key = e.vehicleCode.trim();
     if (!key) continue;
     const prev = map.get(key);
     if (!prev) {
       map.set(key, { ...e });
+      order.push(key);
     } else {
+      prev.totalQuantity += e.totalQuantity;
       prev.totalAmount += e.totalAmount;
     }
   }
-  return [...map.values()].sort((a, b) => b.totalAmount - a.totalAmount);
+  return order.map((k) => map.get(k)!);
 }
 
-export function fuelRowTotal(entry: {
-  totalAmount: unknown;
-}): number {
+/** @deprecated mergeFuelVehicleSummaries を使用 */
+export function mergeFuelVehicleEntries(
+  entries: ParsedFuelVehicleEntry[],
+): ParsedFuelVehicleEntry[] {
+  const merged = mergeFuelVehicleSummaries(entries);
+  return merged.map((v) => ({
+    ...v,
+    vehicleNumber: "",
+    workDescription: fuelVehicleWorkDescription(v),
+  }));
+}
+
+export function fuelRowTotal(entry: { totalAmount: unknown }): number {
   return safeNumber(entry.totalAmount);
 }
 
-/** 解析結果をインポート用成形テキストに変換 */
 export function formatFuelBillForImport(parsed: ParsedFuelBill): string {
   const header = [
     `${parsed.vendorName} 燃料代請求書`,
@@ -378,7 +515,7 @@ export function formatFuelBillForImport(parsed: ParsedFuelBill): string {
   const body = parsed.vehicles
     .map(
       (v) =>
-        `車番：${normalizeShabanKey(v.cardKey)}\n車番計：${v.totalAmount}`,
+        `車番：${normalizeShabanKey(v.vehicleCode)}\n車番計：${v.totalAmount}`,
     )
     .join("\n\n");
 

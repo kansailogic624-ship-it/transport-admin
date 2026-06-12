@@ -56,8 +56,8 @@ function cellText(value: unknown): string {
 }
 
 /** 苗字と名前の間のスペース（半角・全角）を除去し、全角英数字も半角に統一 */
-export function normalizeDriverName(raw: string): string {
-  return raw
+export function normalizeDriverName(raw: string | null | undefined): string {
+  return (raw ?? "")
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) =>
       String.fromCharCode(c.charCodeAt(0) - 0xfee0),
     )

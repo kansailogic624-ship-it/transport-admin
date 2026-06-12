@@ -1,0 +1,122 @@
+{
+  "schedulePath": "C:/Users/大西本社/OneDrive/デスクトップ/実績・労務・生産性管理/ファイルメーカー日時売上/20260501-20260531.xlsx",
+  "masterSource": "ローカルマスタxlsx",
+  "ledgerCounts": {
+    "employees": 73,
+    "vehicles": 50,
+    "jobs": 173
+  },
+  "rowCounts": {
+    "total": 1818,
+    "work": 1378,
+    "attendance": 440,
+    "holiday": 440,
+    "warnings": 1022
+  },
+  "unresolved": {
+    "employees": [],
+    "vehicles": [],
+    "shippers": [],
+    "jobs": []
+  },
+  "jointOperations": {
+    "count": 245,
+    "totalOperations": 1058,
+    "suspiciousFourPlus": 3,
+    "duplicateMember": 0
+  },
+  "amazonHb2": {
+    "rowCount": 2,
+    "employeeRevenueSum": 53000,
+    "companyRevenue": 53000,
+    "rows": [
+      {
+        "employee": "中出 真敬",
+        "revenue": 26500,
+        "employeeShare": 26500,
+        "vehicle": "52-88"
+      },
+      {
+        "employee": "ﾃﾞｨﾝ ｳﾞｨｴｯﾄ ﾀﾞﾝ",
+        "revenue": 26500,
+        "employeeShare": 26500,
+        "vehicle": "52-88"
+      }
+    ]
+  },
+  "vehicleFill": {
+    "employeeDayFilledRows": 274,
+    "jointJobFilledRows": 103,
+    "multiVehicleEmployeeDays": 21
+  },
+  "attendanceRevenue": {
+    "companyFlaggedRows": 0,
+    "shareTotal": 0,
+    "rawRevenue": 0
+  },
+  "rideAlong": {
+    "reviewOperationCount": 7,
+    "warningRowCount": 14,
+    "operations": [
+      {
+        "businessDate": "2026-05-03",
+        "shipper": "エフピコ",
+        "job": "久御山C①",
+        "companyAmount": 14800,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-03",
+        "shipper": "エフピコ",
+        "job": "久御山ﾍﾞｽﾄｰﾈ",
+        "companyAmount": 69000,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-10",
+        "shipper": "エフピコ",
+        "job": "久御山ﾍﾞｽﾄｰﾈ",
+        "companyAmount": 69000,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-17",
+        "shipper": "エフピコ",
+        "job": "久御山ﾍﾞｽﾄｰﾈ",
+        "companyAmount": 69000,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-24",
+        "shipper": "エフピコ",
+        "job": "久御山C①",
+        "companyAmount": 14800,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-24",
+        "shipper": "エフピコ",
+        "job": "久御山ﾍﾞｽﾄｰﾈ",
+        "companyAmount": 69000,
+        "rowCount": 2
+      },
+      {
+        "businessDate": "2026-05-31",
+        "shipper": "エフピコ",
+        "job": "久御山ﾍﾞｽﾄｰﾈ",
+        "companyAmount": 69000,
+        "rowCount": 2
+      }
+    ]
+  },
+  "revenue": {
+    "excelOriginalTotal": 30017215,
+    "companyTotal": 30017215,
+    "employeeShareTotal": 28696415,
+    "gap": 0,
+    "isBalanced": true,
+    "mismatchReasons": []
+  },
+  "verdict": "PASS",
+  "issues": []
+}

@@ -468,14 +468,14 @@ export function FusionImportReview({
                   </Label>
                   <Select
                     value={
-                      selectedRecord.primaryLinkedDispatchName &&
+                      (selectedRecord.primaryLinkedDispatchName &&
                       (selectedRecord.fusionDispatchOptions ?? []).some(
                         (o) =>
                           o.dispatchName ===
                           selectedRecord.primaryLinkedDispatchName,
                       )
                         ? selectedRecord.primaryLinkedDispatchName
-                        : NONE_VALUE
+                        : NONE_VALUE) ?? ""
                     }
                     onValueChange={(v) => {
                       const name = v === NONE_VALUE ? "" : v;

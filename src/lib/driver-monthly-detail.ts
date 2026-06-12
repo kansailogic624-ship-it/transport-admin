@@ -5,7 +5,13 @@ import {
   type AlertItem,
   type TimecardDeviation,
 } from "./alerts";
+import {
+  buildEmployeeNameIndex,
+  resolveCanonicalEmployeeName,
+  type EmployeeNameIndex,
+} from "./employee-name-resolve";
 import { normalizeDriverName } from "./driving-report-parser";
+import type { EmployeeDetail, MasterData } from "./types";
 import {
   driverOnTripCrew,
   driverShareRevenue,
@@ -105,9 +111,13 @@ function driverOnTrip(trip: TripEntry, driverName: string): boolean {
   return driverOnTripCrew(trip, driverName);
 }
 
+function driverNamesMatch(a: string, b: string): boolean {
+  return normalizeDriverName(a) === normalizeDriverName(b);
+}
+
 function tripsForDriver(record: DailyRecord, driverName: string): TripEntry[] {
   if (isPartnerRecord(record)) return [];
-  const isPrimary = record.driverName.trim() === driverName;
+  const isPrimary = driverNamesMatch(record.driverName, driverName);
   return record.trips.filter(
     (t) =>
       !isPartnerTrip(t) &&
@@ -115,21 +125,45 @@ function tripsForDriver(record: DailyRecord, driverName: string): TripEntry[] {
   );
 }
 
-function collectDriverNames(monthRecords: DailyRecord[]): string[] {
-  const names = new Set<string>();
+function collectDriverNames(
+  monthRecords: DailyRecord[],
+  nameIndex: EmployeeNameIndex,
+): string[] {
+  const byKey = new Map<string, string>();
+
+  const addName = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const key = normalizeDriverName(trimmed);
+    if (!key) return;
+    const canonical = resolveCanonicalEmployeeName(trimmed, nameIndex);
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, canonical);
+      return;
+    }
+    if (prev === canonical) return;
+    const preferSpace = (a: string, b: string) => {
+      const aSpace = /[\s\u3000]/.test(a);
+      const bSpace = /[\s\u3000]/.test(b);
+      if (aSpace !== bSpace) return aSpace ? a : b;
+      return a.localeCompare(b, "ja") <= 0 ? a : b;
+    };
+    byKey.set(key, preferSpace(prev, canonical));
+  };
+
   for (const record of monthRecords) {
     if (isPartnerRecord(record)) continue;
-    const primary = record.driverName.trim();
-    if (primary) names.add(primary);
+    addName(record.driverName);
     for (const trip of record.trips) {
       if (isPartnerTrip(trip)) continue;
       for (const member of trip.crew) {
-        const n = member.name.trim();
-        if (n) names.add(n);
+        addName(member.name);
       }
     }
   }
-  return [...names].sort((a, b) => a.localeCompare(b, "ja"));
+
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, "ja"));
 }
 
 function driverKmForDay(
@@ -142,7 +176,7 @@ function driverKmForDay(
     const trips = tripsForDriver(record, driverName);
     if (trips.length === 0) continue;
 
-    if (record.driverName.trim() === driverName) {
+    if (driverNamesMatch(record.driverName, driverName)) {
       sum += recordDailyKm(record);
     } else {
       for (const km of dailyKmByVehicleFromTrips(trips).values()) {
@@ -153,12 +187,25 @@ function driverKmForDay(
   return sum;
 }
 
+export type DriverMonthlyDetailOptions = {
+  employees?: EmployeeDetail[];
+  masters?: MasterData;
+};
+
+function resolveNameIndex(
+  options?: DriverMonthlyDetailOptions,
+): EmployeeNameIndex {
+  return buildEmployeeNameIndex(options?.employees ?? [], options?.masters);
+}
+
 export function buildDriverMonthSummaries(
   records: DailyRecord[],
   yearMonth: string,
+  options?: DriverMonthlyDetailOptions,
 ): DriverMonthSummary[] {
   const monthRecords = records.filter((r) => recordInMonth(r.date, yearMonth));
-  const driverNames = collectDriverNames(monthRecords);
+  const nameIndex = resolveNameIndex(options);
+  const driverNames = collectDriverNames(monthRecords, nameIndex);
 
   return driverNames.map((driverName) => {
     const operatingDates = new Set<string>();
@@ -180,7 +227,7 @@ export function buildDriverMonthSummaries(
 
     let totalRestraintMinutes = 0;
     for (const record of monthRecords) {
-      if (record.driverName.trim() !== driverName) continue;
+      if (!driverNamesMatch(record.driverName, driverName)) continue;
       if (isPartnerRecord(record)) continue;
       if (tripsForDriver(record, driverName).length === 0) continue;
       totalRestraintMinutes += restraintMinutesForRecord(record);
@@ -208,7 +255,7 @@ export function buildDriverTripDetailRows(
   const rows: DriverTripDetailRow[] = [];
 
   for (const record of monthRecords) {
-    const isPrimary = record.driverName.trim() === driverName;
+    const isPrimary = driverNamesMatch(record.driverName, driverName);
     const relevantTrips = tripsForDriver(record, driverName);
     let firstOnRecord = true;
 

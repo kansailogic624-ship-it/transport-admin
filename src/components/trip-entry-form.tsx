@@ -16,8 +16,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getTripAlerts } from "@/lib/alerts";
+import { resolveJobRevenueForDate } from "@/lib/job-price-history";
+import { jobNamesForShipper } from "@/lib/job-ledger-utils";
 import { getJobsForShipper } from "@/lib/masters";
-import type { DailyRecord, MasterData, TripEntry } from "@/lib/types";
+import type { DailyRecord, JobDetail, MasterData, TripEntry } from "@/lib/types";
 import type { RunType } from "@/lib/types";
 
 type TripEntryFormProps = {
@@ -29,6 +31,7 @@ type TripEntryFormProps = {
   drivers: string[];
   canRemove: boolean;
   jobOptions: string[];
+  jobDetails?: JobDetail[];
   onChange: (patch: Partial<TripEntry>) => void;
   onRemove: () => void;
 };
@@ -47,6 +50,7 @@ export function TripEntryForm({
   drivers,
   canRemove,
   jobOptions,
+  jobDetails = [],
   onChange,
   onRemove,
 }: TripEntryFormProps) {
@@ -106,7 +110,7 @@ export function TripEntryForm({
               <Label>協力会社名</Label>
               {masters.partners.length > 0 ? (
                 <Select
-                  value={trip.partnerName}
+                  value={trip.partnerName ?? ""}
                   onValueChange={(v) => onChange({ partnerName: v ?? "" })}
                 >
                   <SelectTrigger className="w-full">
@@ -140,7 +144,7 @@ export function TripEntryForm({
           <Label>車両番号</Label>
           {masters.vehicles.length > 0 ? (
             <Select
-              value={trip.vehicleNumber}
+              value={trip.vehicleNumber ?? ""}
               onValueChange={(v) => onChange({ vehicleNumber: v ?? "" })}
             >
               <SelectTrigger className="w-full">
@@ -167,7 +171,7 @@ export function TripEntryForm({
           <Label>荷主名</Label>
           {masters.shippers.length > 0 ? (
             <Select
-              value={trip.shipperName}
+              value={trip.shipperName ?? ""}
               onValueChange={(v) =>
                 onChange({ shipperName: v ?? "", jobName: "" })
               }
@@ -205,8 +209,23 @@ export function TripEntryForm({
             </div>
           ) : jobOptions.length > 0 ? (
             <Select
-              value={trip.jobName}
-              onValueChange={(v) => onChange({ jobName: v ?? "" })}
+              value={trip.jobName ?? ""}
+              onValueChange={(v) => {
+                const jobName = v ?? "";
+                const patch: Partial<TripEntry> = { jobName };
+                if (jobDetails.length > 0 && jobName) {
+                  const unitPrice = resolveJobRevenueForDate(
+                    jobDetails,
+                    trip.shipperName,
+                    jobName,
+                    recordDate,
+                  );
+                  if (unitPrice > 0) {
+                    patch.revenue = String(unitPrice);
+                  }
+                }
+                onChange(patch);
+              }}
             >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="業務名を選択" />
@@ -232,6 +251,11 @@ export function TripEntryForm({
             value={safeNumber(trip.revenue)}
             onChange={(n) => onChange({ revenue: String(n) })}
           />
+          {jobDetails.length > 0 && trip.jobName && (
+            <p className="text-xs text-muted-foreground">
+              業務マスタの単価を自動入力します。スポット対応時は手動で上書きできます。
+            </p>
+          )}
         </div>
 
         {!isPartner && (
@@ -287,8 +311,13 @@ export function TripEntryForm({
 export function jobOptionsForTrip(
   masters: MasterData,
   trip: TripEntry,
+  jobDetails: JobDetail[] = [],
 ): string[] {
-  const jobs = getJobsForShipper(masters, trip.shipperName);
+  const fromLedger = jobNamesForShipper(jobDetails, trip.shipperName);
+  const jobs =
+    fromLedger.length > 0
+      ? fromLedger
+      : getJobsForShipper(masters, trip.shipperName);
   if (trip.jobName && !jobs.includes(trip.jobName)) {
     return [trip.jobName, ...jobs];
   }

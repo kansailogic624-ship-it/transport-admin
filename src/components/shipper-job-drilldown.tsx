@@ -215,8 +215,10 @@ export function ShipperJobDrilldown({
             表示順
           </Label>
           <Select
-            value={sortMode}
-            onValueChange={(v) => setSortMode(v as ShipperJobSortMode)}
+            value={sortMode ?? ""}
+            onValueChange={(v) => {
+              if (v) setSortMode(v as ShipperJobSortMode);
+            }}
           >
             <SelectTrigger id="shipper-sort" className="w-[260px] bg-background">
               <SelectValue />

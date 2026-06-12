@@ -2,14 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSelectedDate } from "@/contexts/selected-date-context";
-import { Download, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, Plus, Trash2 } from "lucide-react";
 import { AlertList } from "@/components/alert-list";
 import { AttendanceCompareTable } from "@/components/attendance-compare-table";
 import {
   attendanceSnapshotsFromRecord,
   emptyAttendanceSnapshots,
 } from "@/lib/attendance-snapshots";
-import { DayStatusBadge } from "@/components/day-status-badge";
 import { formatYen } from "@/lib/currency-format";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -35,23 +34,25 @@ import { Separator } from "@/components/ui/separator";
 import { getRecordAlerts, getTripAlerts } from "@/lib/alerts";
 import { exportDailyRecordsCsv } from "@/lib/csv";
 import { newCrewMember } from "@/lib/crew-utils";
-import { formatCrewSummary } from "@/lib/labor-cost";
 import { addUniqueToList } from "@/lib/masters";
 import { normalizeTrip } from "@/lib/trip-normalize";
 import {
   jobOptionsForTrip,
   TripEntryForm,
 } from "@/components/trip-entry-form";
-import { DailyImportGrid } from "@/components/fusion-import";
-import { RollCallImport } from "@/components/roll-call-import";
-import { TripFusionEditor } from "@/components/trip-fusion-editor";
+import { DailyImportRedirectGrid } from "@/components/daily-import-redirect-grid";
+import { PreprocessedJsonImportPanel } from "@/components/preprocessed-json-import-panel";
+import type { PreprocessSourceType } from "@/lib/import-preprocessor";
 import {
   ReportStatusBadge,
   ReportStatusSelect,
 } from "@/components/report-status-control";
+import { normalizeJobDetails } from "@/lib/job-price-history";
+import { loadJobDetails } from "@/services/firestore-storage";
 import type {
   DailyRecord,
   DailyReportStatus,
+  JobDetail,
   MasterData,
   TripEntry,
   RunType,
@@ -69,6 +70,7 @@ type DailyDashboardProps = {
   masters: MasterData;
   onRecordsChange: (records: DailyRecord[]) => void;
   onMastersChange: (masters: MasterData) => void;
+  onGoToPreprocess: (sourceType: PreprocessSourceType) => void;
 };
 
 function newTrip(driverName = "", runType: RunType = "own"): TripEntry {
@@ -124,13 +126,63 @@ function mergeSavedWithExisting(
     importHistoryId: existing.importHistoryId,
     fusionDispatchOptions: existing.fusionDispatchOptions,
     primaryLinkedDispatchName: existing.primaryLinkedDispatchName,
-    isFusionDraft: existing.isFusionDraft,
+    isFusionDraft: false,
     reportedDistanceKm: saved.reportedDistanceKm ?? existing.reportedDistanceKm,
   };
 }
 
 function primaryDriverName(form: ReturnType<typeof emptyForm>): string {
   return form.useCustomDriver ? form.customDriver.trim() : form.driverName;
+}
+
+function primaryTrip(record: DailyRecord): TripEntry | undefined {
+  return record.trips[0];
+}
+
+function formatCompactLine1(record: DailyRecord): string {
+  const trip = primaryTrip(record);
+  if (!trip) {
+    if (record.dayStatus) return `${record.date} ${record.dayStatus}`;
+    return `${record.date} ${record.driverName || "（記録）"}`;
+  }
+  const shipper = trip.shipperName.trim() || "荷主未入力";
+  const job = trip.jobName.trim() || "業務未入力";
+  const vehicle = trip.vehicleNumber.trim();
+  const extra =
+    record.trips.length > 1 ? ` 他${record.trips.length - 1}件` : "";
+  return `${record.date} ${shipper} - ${job}${
+    vehicle ? ` (${vehicle})` : ""
+  }${extra}`;
+}
+
+function formatCompactLine2(record: DailyRecord): string {
+  const trip = primaryTrip(record);
+  if (isPartnerRecord(record) || trip?.runType === "partner") {
+    const partner = trip?.partnerName.trim() || "—";
+    const fee = trip?.partnerFee
+      ? ` / 傭車料 ${formatYen(trip.partnerFee)}`
+      : "";
+    return `傭車: ${partner}${fee}`;
+  }
+  const driver =
+    record.driverName.trim() ||
+    trip?.crew?.find((c) => c.memberType === "employee")?.name?.trim() ||
+    trip?.crew?.[0]?.name?.trim() ||
+    "—";
+  const assistants =
+    trip?.crew
+      ?.slice(1)
+      .map((c) => c.name.trim())
+      .filter(Boolean)
+      .join("、") || "—";
+  const remark =
+    trip?.reportSourceLabel?.trim() ||
+    record.dayStatus ||
+    record.primaryLinkedDispatchName?.trim() ||
+    "";
+  return `運転手: ${driver} / 助手: ${assistants}${
+    remark ? ` ${remark}` : ""
+  }`;
 }
 
 function recordFromForm(
@@ -175,32 +227,13 @@ export function DailyDashboard({
   masters,
   onRecordsChange,
   onMastersChange,
+  onGoToPreprocess,
 }: DailyDashboardProps) {
   const drivers = masters.drivers;
   const { selectedDate, setSelectedDate } = useSelectedDate();
   const [form, setForm] = useState(() => emptyForm(selectedDate));
   const [editingId, setEditingId] = useState<string | null>(null);
-  /** FM配車アコーディオン管理: key = "${recordId}|${tripIndex}" */
-  const [expandedFusion, setExpandedFusion] = useState<Set<string>>(new Set());
-  /** 業務タブ選択: key = recordId, value = tripIndex */
-  const [activeJobTabs, setActiveJobTabs] = useState<Map<string, number>>(new Map());
-
-  const toggleFusion = (key: string) => {
-    setExpandedFusion((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const setActiveTab = (recordId: string, tabIdx: number) => {
-    setActiveJobTabs((prev) => {
-      const next = new Map(prev);
-      next.set(recordId, tabIdx);
-      return next;
-    });
-  };
+  const [jobDetails, setJobDetails] = useState<JobDetail[]>([]);
 
   const persistRecords = useCallback(
     (next: DailyRecord[]) => {
@@ -248,6 +281,12 @@ export function DailyDashboard({
   }, [selectedDate, editingId]);
 
   useEffect(() => {
+    loadJobDetails()
+      .then((rows) => setJobDetails(normalizeJobDetails(rows)))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
     if (editingId || !attendanceSourceRecord) return;
     setForm((prev) => {
       const snap = prev.attendanceSnapshots;
@@ -268,8 +307,26 @@ export function DailyDashboard({
     () =>
       records
         .filter((r) => r.date === selectedDate)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+        .sort((a, b) => {
+          const draftA = a.isFusionDraft ? 0 : 1;
+          const draftB = b.isFusionDraft ? 0 : 1;
+          if (draftA !== draftB) return draftA - draftB;
+          return b.createdAt.localeCompare(a.createdAt);
+        }),
     [records, selectedDate],
+  );
+
+  const pendingDraftCount = useMemo(
+    () => dayRecords.filter((r) => r.isFusionDraft).length,
+    [dayRecords],
+  );
+
+  const editingDraft = useMemo(
+    () =>
+      editingId
+        ? (records.find((r) => r.id === editingId)?.isFusionDraft ?? false)
+        : false,
+    [editingId, records],
   );
 
   const resetForm = () => {
@@ -404,20 +461,8 @@ export function DailyDashboard({
 
   return (
     <>
-      <DailyImportGrid
-        records={records}
-        masters={masters}
-        onRecordsChange={persistRecords}
-        onMastersChange={onMastersChange}
-        rollCall={
-          <RollCallImport
-            records={records}
-            masters={masters}
-            onRecordsChange={persistRecords}
-            onMastersChange={onMastersChange}
-          />
-        }
-      />
+      <DailyImportRedirectGrid onGoToPreprocess={onGoToPreprocess} />
+      <PreprocessedJsonImportPanel />
 
       <div className="flex flex-wrap items-center gap-4 rounded-xl border-2 border-blue-100 bg-blue-50/40 p-5 shadow-sm dark:border-blue-900/50 dark:bg-blue-950/20">
         <div className="min-w-[220px] flex-1 space-y-2">
@@ -514,7 +559,7 @@ export function DailyDashboard({
                   <Label>ドライバー名（代表・勤怠の対象）</Label>
                   {!form.useCustomDriver ? (
                     <Select
-                      value={form.driverName}
+                      value={form.driverName ?? ""}
                       onValueChange={(v) => {
                         const name = v ?? "";
                         setForm((prev) => ({
@@ -627,7 +672,8 @@ export function DailyDashboard({
                     records={records}
                     drivers={drivers}
                     canRemove={form.trips.length > 1}
-                    jobOptions={jobOptionsForTrip(masters, trip)}
+                    jobOptions={jobOptionsForTrip(masters, trip, jobDetails)}
+                    jobDetails={jobDetails}
                     onChange={(patch) => updateTrip(trip.id, patch)}
                     onRemove={() =>
                       setForm({
@@ -650,7 +696,11 @@ export function DailyDashboard({
 
               <div className="flex flex-wrap gap-2">
                 <Button type="submit" className="flex-1 sm:flex-none">
-                  {editingId ? "更新する" : "登録する"}
+                  {editingDraft
+                    ? "確定（保存）"
+                    : editingId
+                      ? "更新する"
+                      : "登録する"}
                 </Button>
                 {editingId && (
                   <Button type="button" variant="outline" onClick={resetForm}>
@@ -662,244 +712,130 @@ export function DailyDashboard({
           </CardContent>
         </Card>
 
-        {/* 右：当日一覧 */}
+        {/* 右：当日一覧（コンパクト2行） */}
         <Card>
-          <CardHeader>
-            <CardTitle>{selectedDate} の入力一覧</CardTitle>
-            <CardDescription>
-              警告がある行は赤字で表示されます。クリックで編集できます。
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">
+                {selectedDate} の入力一覧
+              </CardTitle>
+              {pendingDraftCount > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-amber-400 bg-amber-50 text-amber-800"
+                >
+                  未確定 {pendingDraftCount} 件
+                </Badge>
+              )}
+            </div>
+            <CardDescription className="text-xs">
+              クリックで左フォームに読み込み。未確定データは橙色、確定済みはチェック表示。
+              {pendingDraftCount > 0 &&
+                " 左の「確定（保存）」で登録完了すると未確定から外れます。"}
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="pt-0">
             {dayRecords.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 この日付のデータはまだありません。左のフォームから登録してください。
               </p>
             ) : (
-              <div className="space-y-1.5">
-              {dayRecords.map((record) => {
-                const alerts = getRecordAlerts(record);
-                const hasFusion = (record.fusionDispatchOptions?.length ?? 0) > 0;
-                const totalRev = record.trips
-                  .map((t) => Number(String(t.revenue).replace(/,/g, "")))
-                  .filter((n) => Number.isFinite(n) && n > 0)
-                  .reduce((s, n) => s + n, 0);
-                return (
-                  <div
-                    key={record.id}
-                    className="rounded-lg border transition-colors hover:bg-muted/30"
-                  >
-                    {/* ── ヘッダー行（クリックで編集） ── */}
+              <div className="max-h-[min(72vh,640px)] overflow-y-auto rounded-md border">
+                {dayRecords.map((record) => {
+                  const alerts = getRecordAlerts(record);
+                  const isEditing = editingId === record.id;
+                  const isDraft = record.isFusionDraft === true;
+                  const totalRev = record.trips
+                    .map((t) => Number(String(t.revenue).replace(/,/g, "")))
+                    .filter((n) => Number.isFinite(n) && n > 0)
+                    .reduce((s, n) => s + n, 0);
+                  return (
                     <div
-                      className="flex cursor-pointer flex-wrap items-center justify-between gap-1.5 px-3 py-2"
-                      onClick={() => startEdit(record)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") startEdit(record);
-                      }}
-                      role="button"
-                      tabIndex={0}
+                      key={record.id}
+                      className={[
+                        "group border-b last:border-b-0 transition-colors",
+                        isEditing
+                          ? "bg-blue-50"
+                          : isDraft
+                            ? "bg-amber-50/50"
+                            : "bg-background",
+                        isDraft ? "border-l-2 border-l-amber-400" : "",
+                        !isDraft ? "border-l-2 border-l-emerald-400/60" : "",
+                      ].join(" ")}
                     >
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold leading-tight">
-                          {isPartnerRecord(record) ? "傭車運行" : record.driverName}
-                        </p>
-                        {!isPartnerRecord(record) && (
-                          <p className="text-[11px] text-muted-foreground">
-                            出勤 {record.clockIn || "—"} / 退勤 {record.clockOut || "—"} / 点呼 {record.rollCallTime || "—"}
+                      <div
+                        className={[
+                          "grid cursor-pointer gap-0.5 px-2 py-1.5",
+                          "hover:bg-muted/40",
+                          isEditing ? "hover:bg-blue-100/60" : "",
+                        ].join(" ")}
+                        onClick={() => startEdit(record)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            startEdit(record);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <div className="flex min-w-0 items-start justify-between gap-1">
+                          <p className="min-w-0 truncate text-[11px] font-medium leading-tight">
+                            {formatCompactLine1(record)}
                           </p>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {record.dayStatus && (
-                          <DayStatusBadge status={record.dayStatus} />
-                        )}
-                        {totalRev > 0 && (
-                          <span className="tabular-nums text-sm font-bold text-foreground">
-                            {formatYen(totalRev)}
-                          </span>
-                        )}
-                        {record.isFusionDraft && (
-                          <Badge variant="outline" className="border-amber-400 text-[10px] px-1 py-0">
-                            下書き
-                          </Badge>
-                        )}
-                        {isPartnerRecord(record) ? (
-                          <Badge variant="outline" className="text-[10px] px-1 py-0">傭車</Badge>
-                        ) : (
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                          >
-                            <ReportStatusSelect
-                              compact
-                              value={record.reportStatus}
-                              onChange={(reportStatus) => {
-                                persistRecords(
-                                  records.map((r) =>
-                                    r.id === record.id
-                                      ? withReportStatusManual(r, reportStatus)
-                                      : r,
-                                  ),
-                                );
+                          <div className="flex shrink-0 items-center gap-1">
+                            {totalRev > 0 && (
+                              <span className="tabular-nums text-[11px] font-bold">
+                                {formatYen(totalRev)}
+                              </span>
+                            )}
+                            {isDraft ? (
+                              <Badge
+                                variant="outline"
+                                className="h-4 px-1 text-[9px] border-amber-400 text-amber-800"
+                              >
+                                未確定
+                              </Badge>
+                            ) : (
+                              <CheckCircle2
+                                className="size-3.5 text-emerald-600"
+                                aria-label="確定済み"
+                              />
+                            )}
+                            {alerts.length > 0 && (
+                              <AlertTriangle
+                                className="size-3.5 text-red-500"
+                                aria-label={alerts.map((a) => a.message).join(" ")}
+                              />
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="size-5 text-destructive opacity-0 group-hover:opacity-100"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (
+                                  confirm(
+                                    `${record.driverName} の記録を削除しますか？`,
+                                  )
+                                ) {
+                                  removeRecord(record.id);
+                                }
                               }}
-                            />
+                              aria-label="削除"
+                            >
+                              <Trash2 className="size-3" />
+                            </Button>
                           </div>
-                        )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs text-destructive"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`${record.driverName} の記録を削除しますか？`)) {
-                              removeRecord(record.id);
-                            }
-                          }}
-                        >
-                          削除
-                        </Button>
+                        </div>
+                        <p className="truncate text-[10px] leading-tight text-muted-foreground">
+                          {formatCompactLine2(record)}
+                        </p>
                       </div>
                     </div>
-
-                    <AlertList alerts={alerts} className="px-3 pb-1" />
-
-                    {record.dayStatus && record.trips.length === 0 && (
-                      <div className="border-t px-3 py-2 text-xs text-muted-foreground">
-                        FileMakerスケジュールより {record.dayStatus} を反映済み
-                      </div>
-                    )}
-
-                    {/* ── 業務タブ＋コンテンツ ── */}
-                    {record.trips.length > 0 && (() => {
-                      const activeIdx = activeJobTabs.get(record.id) ?? 0;
-                      const safeIdx = Math.min(activeIdx, record.trips.length - 1);
-                      const activeTrip = record.trips[safeIdx]!;
-                      const fusionKey = `${record.id}|${safeIdx}`;
-                      const fusionOpen = expandedFusion.has(fusionKey);
-                      const start = Number(activeTrip.startMeter);
-                      const end = Number(activeTrip.endMeter);
-                      const dist =
-                        !Number.isNaN(start) &&
-                        !Number.isNaN(end) &&
-                        activeTrip.startMeter !== "" &&
-                        activeTrip.endMeter !== ""
-                          ? end - start
-                          : null;
-                      return (
-                        <div className="border-t px-3 pb-2 pt-1 text-xs">
-                          {/* タブボタン行（複数業務の場合のみ表示） */}
-                          {record.trips.length > 1 && (
-                            <div className="mb-1 flex flex-wrap gap-0.5">
-                              {record.trips.map((trip, i) => {
-                                const hasRev = Number(String(trip.revenue).replace(/,/g, "")) > 0;
-                                return (
-                                  <button
-                                    key={trip.id}
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setActiveTab(record.id, i);
-                                    }}
-                                    className={[
-                                      "flex items-center gap-0.5 rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
-                                      safeIdx === i
-                                        ? "bg-blue-600 text-white"
-                                        : "bg-muted text-muted-foreground hover:bg-muted/80",
-                                    ].join(" ")}
-                                  >
-                                    業務{i + 1}
-                                    {hasRev && (
-                                      <span className="tabular-nums">
-                                        {formatYen(trip.revenue)}
-                                      </span>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {/* アクティブ業務の1行サマリー */}
-                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0 rounded bg-muted/40 px-2 py-0.5 leading-snug">
-                            {record.trips.length === 1 && (
-                              <span className="shrink-0 font-medium">
-                                業務1{activeTrip.runType === "partner" ? "（傭）" : ""}
-                              </span>
-                            )}
-                            <span className="text-muted-foreground">
-                              {activeTrip.shipperName || "荷主未入力"}
-                              {activeTrip.jobName ? ` / ${activeTrip.jobName}` : ""}
-                            </span>
-                            {activeTrip.revenue ? (
-                              <span className="tabular-nums font-semibold">
-                                {formatYen(activeTrip.revenue)}
-                              </span>
-                            ) : null}
-                            {activeTrip.runType === "partner" && activeTrip.partnerName
-                              ? <span className="text-muted-foreground">{activeTrip.partnerName}</span>
-                              : null}
-                            {activeTrip.runType === "partner" && activeTrip.partnerFee
-                              ? <span className="tabular-nums">傭{formatYen(activeTrip.partnerFee)}</span>
-                              : null}
-                            {activeTrip.runType !== "partner" && activeTrip.tollFee
-                              ? <span className="tabular-nums text-muted-foreground">高速{formatYen(activeTrip.tollFee)}</span>
-                              : null}
-                            {dist !== null && activeTrip.runType !== "partner"
-                              ? <span className="text-muted-foreground">{dist}km</span>
-                              : null}
-                            {activeTrip.runType !== "partner" && (
-                              <span className="text-muted-foreground">
-                                {formatCrewSummary(activeTrip.crew ?? [])}
-                              </span>
-                            )}
-                            {hasFusion && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleFusion(fusionKey);
-                                }}
-                                className={[
-                                  "ml-auto shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium transition-colors",
-                                  fusionOpen
-                                    ? "border-amber-400 bg-amber-50 text-amber-700"
-                                    : "border-muted-foreground/30 text-muted-foreground hover:border-amber-400 hover:text-amber-700",
-                                ].join(" ")}
-                              >
-                                FM配車 {fusionOpen ? "▲" : "▼"}
-                              </button>
-                            )}
-                          </div>
-                          {/* FM配車エディタ（展開時のみ） */}
-                          {hasFusion && fusionOpen && (
-                            <div
-                              className="mt-0.5 rounded border border-amber-200 bg-amber-50/40 px-2 pb-2 pt-1"
-                              onClick={(e) => e.stopPropagation()}
-                              onKeyDown={(e) => e.stopPropagation()}
-                            >
-                              <TripFusionEditor
-                                record={record}
-                                trip={activeTrip}
-                                tripIndex={safeIdx}
-                                masters={masters}
-                                compact
-                                onRecordChange={(updated) => {
-                                  onRecordsChange(
-                                    records.map((r) =>
-                                      r.id === updated.id ? updated : r,
-                                    ),
-                                  );
-                                }}
-                                onMastersChange={onMastersChange}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                );
-              })}
+                  );
+                })}
               </div>
             )}
           </CardContent>

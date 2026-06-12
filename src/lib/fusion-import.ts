@@ -39,9 +39,19 @@ import {
   stampImportHistoryOnRecords,
 } from "./import-history";
 import {
+  loadEmployeeDetails,
   loadVehicleExpenses,
   saveVehicleExpenses,
 } from "@/services/firestore-storage";
+import {
+  buildEmployeeNameIndex,
+  canonicalizeDailyRecordNames,
+} from "./employee-name-resolve";
+import {
+  makeCrewFromFmDispatch,
+  preprocessFmDispatches,
+} from "./fm-dispatch-merge";
+import type { EmployeeDetail } from "./types";
 import { applyVehicleImportUpgrades } from "./vehicle-import-merge";
 import {
   recomputeAllReportStatuses,
@@ -62,7 +72,13 @@ import {
   detectDayStatusFromText,
   type DayStatus,
 } from "./schedule-day-status";
-import type { DailyRecord, MappingRule, MasterData, TripEntry } from "./types";
+import {
+  DEFAULT_MASTERS,
+  type DailyRecord,
+  type MappingRule,
+  type MasterData,
+  type TripEntry,
+} from "./types";
 
 export type FusionImportResult = {
   records: DailyRecord[];
@@ -83,9 +99,12 @@ function reportMatchKey(r: ParsedDrivingReport): string | null {
   return fusionMatchKey(r.date, r.driverName, r.vehicleNumber);
 }
 
-function dispatchRowId(d: ParsedFileMakerDispatch): string {
+export function fmDispatchRowId(d: ParsedFileMakerDispatch): string {
   return `${d.date}|${d.driverName}|${d.dispatchName}|${d.vehicleNumber}|${d.revenue}`;
 }
+
+/** @deprecated fmDispatchRowId を使用 */
+const dispatchRowId = fmDispatchRowId;
 
 function parseFmRevenue(revenue: string): number {
   const n = Number(String(revenue).replace(/,/g, ""));
@@ -108,14 +127,14 @@ function dedupeDispatchesByName(
   return [...byName.values()];
 }
 
-function isHolidayDispatch(d: ParsedFileMakerDispatch): boolean {
+export function isHolidayDispatch(d: ParsedFileMakerDispatch): boolean {
   if (d.isAttendanceRow || d.dayStatus) return true;
   return (
     detectDayStatusFromText(d.dispatchName, d.shipperName) !== undefined
   );
 }
 
-function resolveHolidayDayStatus(
+export function resolveHolidayDayStatus(
   dispatches: ParsedFileMakerDispatch[],
 ): DayStatus {
   for (const d of dispatches) {
@@ -293,6 +312,14 @@ function makeCrew(driverName: string) {
   return [m];
 }
 
+function makeCrewForDispatch(
+  dispatch: ParsedFileMakerDispatch,
+  employees: EmployeeDetail[],
+  masters: MasterData,
+) {
+  return makeCrewFromFmDispatch(dispatch, employees, masters);
+}
+
 type ResolveResult = {
   dispatch: ParsedFileMakerDispatch | null;
   ruleId?: string;
@@ -344,6 +371,8 @@ export function buildFusedRecordFromReport(
   allDispatches: ParsedFileMakerDispatch[],
   matchedDispatches: ParsedFileMakerDispatch[],
   rules: MappingRule[],
+  employees: EmployeeDetail[] = [],
+  masters?: MasterData,
 ): DailyRecord | null {
   if (!report.date || !report.driverName) return null;
 
@@ -433,7 +462,11 @@ export function buildFusedRecordFromReport(
         dropCount: countDeliveryDropsForReportTripSubset(matchingRts),
         startMeter: "",
         endMeter: "",
-        crew: makeCrew(driverName),
+        crew: makeCrewForDispatch(
+          dispatch,
+          employees,
+          masters ?? DEFAULT_MASTERS,
+        ),
         partnerName: "",
         partnerFee: "",
       };
@@ -461,7 +494,13 @@ export function buildFusedRecordFromReport(
         dropCount: rt.isDeliveryDrop ? 1 : 1,
         startMeter: "",
         endMeter: "",
-        crew: makeCrew(driverName),
+        crew: dispatch
+          ? makeCrewForDispatch(
+              dispatch,
+              employees,
+              masters ?? DEFAULT_MASTERS,
+            )
+          : makeCrew(driverName),
         partnerName: "",
         partnerFee: "",
       };
@@ -482,7 +521,13 @@ export function buildFusedRecordFromReport(
         dropCount: countDeliveryDropsForReportTripSubset(report.trips),
         startMeter: "",
         endMeter: "",
-        crew: makeCrew(driverName),
+        crew: pool[0]
+          ? makeCrewForDispatch(
+              pool[0],
+              employees,
+              masters ?? DEFAULT_MASTERS,
+            )
+          : makeCrew(driverName),
         partnerName: "",
         partnerFee: "",
       },
@@ -570,6 +615,8 @@ function buildHolidayFmRecord(
 
 function buildFusedRecordFmOnly(
   dispatches: ParsedFileMakerDispatch[],
+  employees: EmployeeDetail[] = [],
+  masters?: MasterData,
 ): DailyRecord | null {
   const head = dispatches[0];
   if (!head?.date || !head.driverName) return null;
@@ -587,7 +634,11 @@ function buildFusedRecordFmOnly(
     tollFee: d.tollFee,
     startMeter: "",
     endMeter: "",
-    crew: makeCrew(driverName),
+    crew: makeCrewForDispatch(
+      d,
+      employees,
+      masters ?? DEFAULT_MASTERS,
+    ),
     partnerName: "",
     partnerFee: "",
   }));
@@ -608,6 +659,9 @@ function buildFusedRecordFmOnly(
     }),
   );
 }
+
+/** FM配車グループ → 日次レコード（Amazon実績照合・API読込用） */
+export const buildDailyRecordFromFmDispatches = buildFusedRecordFmOnly;
 
 export async function parseFileMakerFiles(
   files: File[],
@@ -666,7 +720,14 @@ export function fuseDispatchesWithReports(
   reports: ParsedDrivingReport[],
   existingRecords: DailyRecord[],
   existingMasters: MasterData,
+  employees: EmployeeDetail[] = [],
 ): FusionImportResult {
+  const processedDispatches = preprocessFmDispatches(
+    dispatches,
+    employees,
+    existingMasters,
+  );
+
   let records = [...existingRecords];
   let masters = {
     ...existingMasters,
@@ -681,12 +742,12 @@ export function fuseDispatchesWithReports(
   const usedDispatchIds = new Set<string>();
 
   // マスタ自動登録は FileMaker 配車データのみ（運転日報は一切反映しない）
-  if (dispatches.length > 0) {
-    masters = mergeMastersFromFileMakerDispatches(masters, dispatches);
+  if (processedDispatches.length > 0) {
+    masters = mergeMastersFromFileMakerDispatches(masters, processedDispatches);
   }
 
   // ファイル内の全配車・日報行を紐づけ対象に含める（再取込・0件成功時も明細表示可能に）
-  for (const d of dispatches) {
+  for (const d of processedDispatches) {
     touchRecordDay(touchedDayKeys, d.date, d.driverName);
   }
   for (const report of reports) {
@@ -710,23 +771,25 @@ export function fuseDispatchesWithReports(
 
     const matched = findDispatchesForReport(
       report,
-      dispatches,
+      processedDispatches,
       usedDispatchIds,
     );
     for (const d of matched) {
       usedDispatchIds.add(dispatchRowId(d));
     }
     if (matched.length > 0) {
-      markDriverDayDispatchesUsed(report, dispatches, usedDispatchIds);
+      markDriverDayDispatchesUsed(report, processedDispatches, usedDispatchIds);
     }
 
     const fusionRules = allMappingRulesForFusion(masters);
     const ruleIds: string[] = [];
     const record = buildFusedRecordFromReport(
       report,
-      dispatches,
+      processedDispatches,
       matched,
       fusionRules,
+      employees,
+      masters,
     );
     if (!record) {
       skippedCount += 1;
@@ -790,7 +853,7 @@ export function fuseDispatchesWithReports(
   // applyDayRevenueToTrips がループごとに再計算され売上が二重計上されるため、
   // 同一日の全配車をまとめて 1 つの fmRecord に変換することでこれを防ぐ。
   const dispatchGroups = new Map<string, ParsedFileMakerDispatch[]>();
-  for (const d of dispatches) {
+  for (const d of processedDispatches) {
     if (usedDispatchIds.has(dispatchRowId(d))) continue;
     const groupKey = `${normalizeIsoDate(d.date)}|${normalizeDriverName(d.driverName)}`;
     const grp = dispatchGroups.get(groupKey);
@@ -894,7 +957,11 @@ export function fuseDispatchesWithReports(
       );
 
       if (newDispatches.length > 0) {
-        const fmRecord = buildFusedRecordFmOnly(newDispatches);
+        const fmRecord = buildFusedRecordFmOnly(
+          newDispatches,
+          employees,
+          masters,
+        );
         if (fmRecord) {
           touchRecordDay(touchedDayKeys, existing.date, existing.driverName);
           records[dupDriverDay] = mergeTwoDailyRecords(existing, {
@@ -921,7 +988,7 @@ export function fuseDispatchesWithReports(
     }
 
     // 完全新規（既存なし）→ 同日グループ全件を 1 レコードとして登録
-    const record = buildFusedRecordFmOnly(activeGroup);
+    const record = buildFusedRecordFmOnly(activeGroup, employees, masters);
     if (!record) continue;
 
     for (const d of activeGroup) usedDispatchIds.add(dispatchRowId(d));
@@ -947,13 +1014,20 @@ export function fuseDispatchesWithReports(
     "📝 融合結果は下書きです。確認画面または日次一覧で配車の手動修正ができます。",
   );
 
+  const nameIndex = buildEmployeeNameIndex(employees, masters);
+  if (nameIndex.size > 0) {
+    records = records.map((record) =>
+      canonicalizeDailyRecordNames(record, nameIndex),
+    );
+  }
+
   records = recomputeAllReportStatuses(
     consolidateDailyRecordsByDriverDay(records),
   );
 
   // 日報取込後もマスタへは触れず、誤登録のクリーンアップのみ実施
   const cleaned = cleanupImportedJobMasterNoise(masters, {
-    fmDispatches: dispatches,
+    fmDispatches: processedDispatches,
     records,
   });
   if (cleaned.removed.length > 0) {
@@ -991,11 +1065,19 @@ export async function importFusionBatch(
   const dispatches = await parseFileMakerFiles(fileMakerFiles);
   const { reports, errors } = await parseSeeDriveReportFiles(seeDriveFiles);
 
+  let employees: EmployeeDetail[] = [];
+  try {
+    employees = await loadEmployeeDetails();
+  } catch {
+    employees = [];
+  }
+
   const result = fuseDispatchesWithReports(
     dispatches,
     reports,
     existingRecords,
     existingMasters,
+    employees,
   );
 
   for (const e of errors) {

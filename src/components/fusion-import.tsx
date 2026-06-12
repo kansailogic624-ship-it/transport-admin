@@ -340,15 +340,16 @@ export function FusionImport(props: FusionImportProps) {
 }
 
 const IMPORT_GRID_CLASS =
-  "mb-6 grid w-full grid-cols-3 items-stretch gap-4 max-sm:grid-cols-1";
+  "mb-6 grid w-full grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-4";
 
-/** 日次入力タブ用：3列グリッド＋取込結果 */
+/** 日次入力タブ用：4列グリッド＋取込結果 */
 export function DailyImportGrid(
   props: FusionImportProps & {
     rollCall: ReactNode;
+    amazonPerformance?: ReactNode;
   },
 ) {
-  const { rollCall, ...fusionProps } = props;
+  const { rollCall, amazonPerformance, ...fusionProps } = props;
 
   return (
     <FusionImportProvider {...fusionProps}>
@@ -360,6 +361,9 @@ export function DailyImportGrid(
         <div className="min-w-0">
           <FusionDrivingReportImportCard />
         </div>
+        {amazonPerformance ? (
+          <div className="min-w-0">{amazonPerformance}</div>
+        ) : null}
       </div>
       <FusionImportResults
         masters={fusionProps.masters}

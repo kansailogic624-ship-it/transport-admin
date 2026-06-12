@@ -6,10 +6,18 @@
  *  2. 元号（R/H/S + 令和/平成/昭和）→ 西暦への自動変換
  *  3. 金額：カンマ・円・¥・スペースを除去して数値抽出
  *  4. 失敗しても残りフィールドに影響しない（行ごとに独立）
+ *
+ * 請求書OCRの車両行は maintenance-bill-ocr-summary.ts の「集計4項目モード」を使用。
+ * 明細行の1行ずつパースは行わない（vehicle_number / maintenance_type / base_amount / tax_amount のみ）。
  */
 
 import { parseCurrencyInput, safeNumber } from "./currency-format";
-import type { BillType, VehicleExpenseRecord, VehicleMaintenanceBill } from "./types";
+import type {
+  BillType,
+  MaintenanceType,
+  VehicleExpenseRecord,
+  VehicleMaintenanceBill,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // 元号変換
@@ -125,6 +133,260 @@ export interface ParsedBillText {
   taxAmount: number;
   expensesSubtotal: number;
   rawText: string;
+  /** 税抜・消費税が税込合計からの推測値か */
+  taxInferred?: boolean;
+}
+
+export type ResolvedBillTaxBreakdown = Partial<ParsedBillText> & {
+  taxInferred: boolean;
+};
+
+const OCR_AMT_RE =
+  /[¥￥]?\s*[1-9]\d{0,2}(?:,\d{3})+|\b[1-9]\d{3,7}\b/g;
+
+/** 税込合計のみ判明時: 税抜＝四捨五入(合計÷1.1)、消費税＝差額 */
+export function inferTaxFromInclusiveTotal(total: number): {
+  exTax: number;
+  tax: number;
+} {
+  if (total <= 0) return { exTax: 0, tax: 0 };
+  const exTax = Math.round(total / 1.1);
+  const tax = total - exTax;
+  return { exTax, tax };
+}
+
+/** 請求書テキストから税抜・消費税・合計を補完・整合 */
+export function resolveBillTaxBreakdown(
+  parsed: Partial<ParsedBillText>,
+): ResolvedBillTaxBreakdown {
+  let maintenance = safeNumber(parsed.maintenanceSubtotalExTax);
+  let expenses = safeNumber(parsed.expensesSubtotal);
+  let tax = safeNumber(parsed.taxAmount);
+  let total = safeNumber(parsed.totalAmount);
+  let taxInferred = parsed.taxInferred ?? false;
+
+  const exTaxCombined = maintenance + expenses;
+
+  if (total > 0 && exTaxCombined <= 0 && tax <= 0) {
+    const inferred = inferTaxFromInclusiveTotal(total);
+    maintenance = inferred.exTax;
+    expenses = 0;
+    tax = inferred.tax;
+    taxInferred = true;
+  } else if (total > 0 && exTaxCombined > 0 && tax <= 0) {
+    const diff = total - exTaxCombined;
+    if (diff >= 0) {
+      tax = diff;
+    } else {
+      const inferred = inferTaxFromInclusiveTotal(total);
+      maintenance = inferred.exTax;
+      expenses = 0;
+      tax = inferred.tax;
+      taxInferred = true;
+    }
+  } else if (total > 0 && tax > 0 && exTaxCombined <= 0) {
+    const remainder = total - tax;
+    if (remainder > 0) {
+      maintenance = remainder;
+    }
+  } else if (exTaxCombined > 0 && tax > 0 && total <= 0) {
+    total = exTaxCombined + tax;
+  } else if (exTaxCombined > 0 && tax <= 0 && total > 0) {
+    tax = Math.max(0, total - exTaxCombined);
+    if (tax === 0 && exTaxCombined < total) {
+      const inferred = inferTaxFromInclusiveTotal(total);
+      maintenance = inferred.exTax;
+      expenses = 0;
+      tax = inferred.tax;
+      taxInferred = true;
+    }
+  }
+
+  if (!taxInferred && total > 0 && maintenance + expenses + tax > 0) {
+    const sum = maintenance + expenses + tax;
+    if (Math.abs(sum - total) > 2) {
+      total = sum;
+    }
+  }
+
+  return {
+    ...parsed,
+    maintenanceSubtotalExTax: maintenance,
+    expensesSubtotal: expenses,
+    taxAmount: tax,
+    totalAmount: total,
+    taxInferred,
+  };
+}
+
+/** キーワード直後の金額を抽出（最初の1件） */
+function amountAfterKeyword(text: string, keywordRe: RegExp): number {
+  const m = text.match(keywordRe);
+  if (!m?.[1]) return 0;
+  return parseAmount(m[1]);
+}
+
+/** テキスト全体から税区分の集計値を抽出 */
+function extractAggregatedTaxFromText(text: string): Partial<ParsedBillText> {
+  const normalized = normalizeOcrText(text);
+  const lines = normalized
+    .split(/[\r\n]+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const out: Partial<ParsedBillText> = {};
+
+  const fullCompact = normalized.replace(/\s/g, "");
+
+  if (!out.totalAmount) {
+    const totalCandidates = [
+      amountAfterKeyword(
+        fullCompact,
+        /御請求(?:総?額|金額)\s*[：:¥￥]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+      ),
+      amountAfterKeyword(
+        fullCompact,
+        /ご請求(?:総?額|金額)\s*[：:¥￥]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+      ),
+      amountAfterKeyword(
+        fullCompact,
+        /請求(?:総?額|金額)(?!小計)\s*[：:¥￥]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+      ),
+    ].filter((n) => n > 0);
+    if (totalCandidates.length > 0) {
+      out.totalAmount = Math.max(...totalCandidates);
+    }
+  }
+
+  let salesExTaxSum = 0;
+  let taxSum = 0;
+  let expensesExTax = 0;
+  let maintenanceExTax = 0;
+  let inMiscSection = false;
+
+  for (const line of lines) {
+    if (/諸費用/.test(line) && !/請求小計|合計/.test(line)) {
+      inMiscSection = true;
+    }
+    if (/整備費用|整備費/.test(line) && !/請求小計|合計|消費税/.test(line)) {
+      inMiscSection = false;
+    }
+
+    if (/今回売上金額|売上金額|本体価格/.test(line)) {
+      OCR_AMT_RE.lastIndex = 0;
+      const amounts = [...line.matchAll(OCR_AMT_RE)]
+        .map((m) => parseAmount(m[0]))
+        .filter((n) => n >= 100);
+      if (amounts.length > 0) {
+        const val = amounts[0]!;
+        salesExTaxSum += val;
+        if (inMiscSection) expensesExTax += val;
+        else maintenanceExTax += val;
+      }
+      continue;
+    }
+
+    if (
+      /(?:^|[\s　])消費税|地方消費税/.test(line) &&
+      !/税抜|税込|本体|売上/.test(line)
+    ) {
+      OCR_AMT_RE.lastIndex = 0;
+      const amounts = [...line.matchAll(OCR_AMT_RE)]
+        .map((m) => parseAmount(m[0]))
+        .filter((n) => n > 0 && n < 10_000_000);
+      if (amounts.length > 0) {
+        taxSum += amounts[0]!;
+      }
+    }
+
+    if (!out.expensesSubtotal && /諸費用請求小計/.test(line)) {
+      const n = amountAfterKeyword(
+        line.replace(/\s/g, ""),
+        /諸費用請求小計\s*[：:]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+      );
+      if (n > 0) out.expensesSubtotal = n;
+    }
+  }
+
+  if (salesExTaxSum > 0) {
+    if (maintenanceExTax > 0) {
+      out.maintenanceSubtotalExTax = maintenanceExTax;
+    }
+    if (expensesExTax > 0) {
+      out.expensesSubtotal = expensesExTax;
+    } else if (!out.maintenanceSubtotalExTax) {
+      out.maintenanceSubtotalExTax = salesExTaxSum;
+    }
+  }
+
+  if (taxSum > 0) {
+    out.taxAmount = taxSum;
+  }
+
+  if (!out.maintenanceSubtotalExTax) {
+    const patterns = [
+      /(?:小計|税抜|本体価格|整備費用)(?:請求)?\s*[：:]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+      /整備費用請求小計\s*[：:]?\s*([1-9]\d{0,2}(?:,\d{3})+)/,
+    ];
+    for (const re of patterns) {
+      const n = amountAfterKeyword(fullCompact, re);
+      if (n > 0) {
+        out.maintenanceSubtotalExTax = n;
+        break;
+      }
+    }
+  }
+
+  return out;
+}
+
+/** 登録番号・車両番号・車台番号の表記を抽出 */
+export function extractRegistrationHintsFromText(text: string): string[] {
+  const normalized = normalizeOcrText(text);
+  const hints = new Set<string>();
+
+  const patterns = [
+    /登録番号\s*[：:]\s*([^\s　,、]+)/g,
+    /車両番号\s*[：:]\s*([^\s　,、]+)/g,
+    /車台番号\s*[：:]\s*([^\s　,、]+)/g,
+    /\b(\d{2,3})[-－](\d{1,4})\b/g,
+    /\b(\d{2,3})(\d{4})\b/g,
+  ];
+
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(normalized)) !== null) {
+      if (m[2] !== undefined) {
+        hints.add(`${m[1]}-${m[2]}`);
+        hints.add(`${m[1]}${m[2]}`);
+      } else if (m[1]) {
+        hints.add(m[1].trim());
+      }
+    }
+  }
+
+  return [...hints].filter((h) => h.length >= 3);
+}
+
+/** 請求書内の登録番号（34-88 形式）を重複なく列挙（金額の数字分割は含めない） */
+export function extractDistinctRegistrationNumbers(text: string): string[] {
+  const normalized = normalizeOcrText(text);
+  const hints = new Set<string>();
+
+  for (const m of normalized.matchAll(
+    /(?:登録番号|車両番号|車番)\s*[：:]?\s*(\d{2,3})[-－](\d{1,4})/g,
+  )) {
+    hints.add(`${m[1]}-${m[2]}`);
+  }
+
+  for (const m of normalized.matchAll(
+    /(?:^|[\s　,、])(\d{2,3})[-－](\d{1,4})(?:[\s　,、]|$)/gm,
+  )) {
+    hints.add(`${m[1]}-${m[2]}`);
+  }
+
+  return [...hints].filter(isValidInvoiceVehicleNumber);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +530,9 @@ export function cleanPlateNumber(raw: string): string {
 const PLATE_NOISE_WORDS =
   /交換|車検|タイヤ|オイル|請求|金額|番号|合計|小計|技術|部品|諸費|内容|整備|フィルター|点検|修理|作業/;
 
+const DETAIL_PLATE_RE =
+  /([一-龠々]{2,6})?\s*(\d{2,3})\s*([ぁ-んァ-ンa-zA-Z]?)\s*(\d{1,4})/;
+
 /** 車番として妥当かの簡易チェック */
 export function isPlausiblePlate(plate: string): boolean {
   const v = cleanPlateNumber(plate);
@@ -275,10 +540,351 @@ export function isPlausiblePlate(plate: string): boolean {
   if (PLATE_NOISE_WORDS.test(v)) return false;
   if (!/\d{2,}/.test(v)) return false;
   // 地域+分類番号 or 分類+かな+連番 のどちらか
-  if (/^[一-龠々]{2,6}\d{2,3}[あ-ん]?\d{1,4}$/.test(v)) return true;
-  if (/^\d{2,3}[あ-ん]\d{1,4}$/.test(v)) return true;
-  if (/^\d{2,3}[あ-ん]?\d{3,4}$/.test(v)) return true;
+  if (/^[一-龠々]{2,6}\d{2,3}[ぁ-んァ-ン]?[a-zA-Z]?\d{1,4}$/.test(v)) return true;
+  if (/^\d{2,3}[ぁ-んァ-ン][a-zA-Z]?\d{1,4}$/.test(v)) return true;
+  if (/^\d{2,3}[ぁ-んァ-ン]?[a-zA-Z]?\d{3,4}$/.test(v)) return true;
   return false;
+}
+
+/** 請求書OCRで車両行として採用してよい登録番号か（加島・御中等は除外） */
+const NON_VEHICLE_PLATE_PATTERNS = [
+  /^加島/,
+  /^有限会社/,
+  /^株式会社/,
+  /御中/,
+  /^様$/,
+  /^消費税/,
+  /^合計/,
+  /^小計/,
+  /^請求/,
+  /^売上/,
+  /^諸費/,
+  /^整備費/,
+  /^部品/,
+  /^技術料/,
+];
+
+export function isValidInvoiceVehicleNumber(plate: string): boolean {
+  const raw = cleanPlateNumber(plate).trim();
+  if (!raw || raw.length < 2) return false;
+
+  const compact = raw.replace(/\s/g, "");
+  for (const pat of NON_VEHICLE_PLATE_PATTERNS) {
+    if (pat.test(compact)) return false;
+  }
+  if (!/\d/.test(raw)) return false;
+
+  const noSep = compact.replace(/[-－ー]/g, "");
+
+  // 金額と誤認しやすい連続数字（5桁以上・ハイフン/かな/地名なし）は車番にしない
+  if (
+    /^\d{5,}$/.test(noSep) &&
+    !/[一-龠々ぁ-んァ-ン]/.test(raw) &&
+    !/[-－]/.test(raw)
+  ) {
+    return false;
+  }
+
+  if (/^\d{2,3}[-－]\d{1,4}$/.test(raw)) return true;
+  if (isPlausiblePlate(raw)) return true;
+
+  if (/^\d{2,3}[ぁ-んァ-ン][a-zA-Z]?\d{1,4}$/.test(noSep)) return true;
+  if (/^[一-龠々]{2,6}\d{2,3}[ぁ-んァ-ン]?[a-zA-Z]?\d{1,4}$/.test(noSep)) {
+    return true;
+  }
+  return false;
+}
+
+/** 宛名・ヘッダー行（車両番号ではない） */
+export function isClientOrHeaderLine(line: string): boolean {
+  const t = line.trim();
+  const c = t.replace(/\s/g, "");
+  if (!t) return true;
+  if (/^(?:有限会社|株式会社)?加島|加島(?:様|御中)|御中/.test(c)) return true;
+  if (/^[^\d]{2,12}様$/.test(t)) return true;
+  if (/^(御請求|ご請求|請求書|請求年月|発行日|住所|TEL|FAX|振込)/.test(c)) {
+    return true;
+  }
+  if (/今回売上|売上金額|御買上|課税計|税抜合計|請求小計|請求金額/.test(c)) {
+    return true;
+  }
+  return false;
+}
+
+/** 行から登録番号（34-88 等）または有効な車両番号を1つ抽出 */
+export function extractRegistrationPlateFromLine(line: string): string {
+  const labeled = line.match(
+    /(?:登録番号|車両番号|車番)\s*[：:]?\s*(\d{2,3})[-－](\d{1,4})/,
+  );
+  if (labeled) return `${labeled[1]}-${labeled[2]}`;
+
+  const dash = line.match(/(?:^|[\s　,、])(\d{2,3})[-－](\d{1,4})(?:[\s　,、]|$)/);
+  if (dash) return `${dash[1]}-${dash[2]}`;
+
+  const plate = extractLenientPlateFromLine(line);
+  return isValidInvoiceVehicleNumber(plate) ? plate : "";
+}
+
+/**
+ * 登録番号を絶対キーとして1台1行を抽出（加島等の宛名行は無視）。
+ * 異なる登録番号の金額を合算しない。
+ */
+export function parsePerVehicleByRegistration(
+  text: string,
+  billType: BillType,
+): ParsedVehicleEntry[] {
+  const rawLines = text
+    .split(/[\r\n]+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const lines = rawLines.map((l) => normalizeOcrText(l));
+  const results: ParsedVehicleEntry[] = [];
+  const seenKeys = new Set<string>();
+  const defaultTax = inferDocumentDefaultTaxCategory(text);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const rawLine = rawLines[i]!;
+    if (isClientOrHeaderLine(line)) continue;
+
+    const plate = extractRegistrationPlateFromLine(line);
+    if (!plate) continue;
+
+    const key = normalizePlateKey(plate);
+    if (seenKeys.has(key)) continue;
+
+    const labeled = extractLabeledAmountsFromLine(rawLine);
+    let labor = labeled.labor;
+    let parts = labeled.parts;
+    let common = labeled.common;
+    let tax = labeled.consumptionTax;
+    let amounts = amountsFromLineText(rawLine);
+
+    if (
+      labor + parts + common === 0 &&
+      amounts.length === 0 &&
+      tax === undefined
+    ) {
+      for (let j = i + 1; j <= Math.min(i + 4, lines.length - 1); j++) {
+        const nxt = lines[j]!;
+        const rawNxt = rawLines[j]!;
+        if (isClientOrHeaderLine(nxt)) continue;
+        const nxtCompact = nxt.replace(/\s/g, "");
+        if (
+          /今回売上|売上金額|課税計|税抜|御請求|合計|小計/.test(nxtCompact) &&
+          !extractRegistrationPlateFromLine(nxt)
+        ) {
+          continue;
+        }
+
+        const nextPlate = extractRegistrationPlateFromLine(nxt);
+        if (nextPlate && normalizePlateKey(nextPlate) !== key) break;
+
+        const nextLabeled = extractLabeledAmountsFromLine(rawNxt);
+        labor = labor || nextLabeled.labor;
+        parts = parts || nextLabeled.parts;
+        common = common || nextLabeled.common;
+        if (tax === undefined && nextLabeled.consumptionTax !== undefined) {
+          tax = nextLabeled.consumptionTax;
+        }
+        amounts.push(...amountsFromLineText(rawNxt));
+        if (
+          labor + parts + common > 0 ||
+          amounts.length > 0 ||
+          tax !== undefined
+        ) {
+          break;
+        }
+      }
+    }
+
+    if (labor + parts + common === 0 && amounts.length > 0) {
+      if (billType === "部品代") {
+        parts = amounts[0] ?? 0;
+      } else {
+        labor = amounts[0] ?? 0;
+      }
+      if (amounts.length >= 2 && tax === undefined) {
+        const second = amounts[1]!;
+        if (second > 0 && second <= (labor + parts + common || amounts[0]!)) {
+          tax = second;
+        }
+      }
+    }
+
+    const exTax = labor + parts + common;
+    if (exTax <= 0 && tax === undefined) continue;
+
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: plate,
+        workDescription: line
+          .replace(LINE_AMOUNT_RE, "")
+          .replace(plate, "")
+          .trim()
+          .slice(0, 40),
+        laborFee: billType === "部品代" ? 0 : labor || exTax,
+        partsFee: billType === "部品代" ? parts || exTax : parts,
+        commonExpense: common,
+        consumptionTax: tax,
+        maintenanceType: inferMaintenanceTypeFromText(
+          [rawLine, rawLines[i + 1], rawLines[i + 2]].filter(Boolean).join(" "),
+        ),
+        totalAmount: exTax + (tax ?? 0),
+        taxCategory: inferTaxCategoryFromText(text, line) ?? defaultTax,
+      }),
+    );
+    seenKeys.add(key);
+  }
+
+  return results;
+}
+
+/**
+ * 緩和チェック: 登録番号風の部分一致（41-79, 3812 等）も車両行として許容。
+ */
+export function isLenientPlateCandidate(plate: string): boolean {
+  const raw = cleanPlateNumber(plate);
+  if (!raw || raw.length < 2) return false;
+  if (isPlausiblePlate(raw)) return true;
+  const v = raw.replace(/[-－ー]/g, "");
+  if (/^\d{2,4}$/.test(v)) return true;
+  if (/^\d{2,3}[ぁ-んァ-ンa-zA-Z]?\d{0,4}$/.test(v)) return true;
+  if (/^[一-龠々]{1,6}\d{2,4}$/.test(v)) return true;
+  return false;
+}
+
+/** 行内金額: カンマ区切り or 5桁以上の連続数字（88000 等。車番4桁との混同を避ける） */
+const LINE_AMOUNT_RE =
+  /[¥￥]?\s*[1-9]\d{0,2}(?:,\d{3})+|\b[1-9]\d{4,7}\b/g;
+
+const MIN_LINE_AMOUNT = 100;
+
+function safeParseStep<T>(step: string, fn: () => T, fallback: T): T {
+  try {
+    const result = fn();
+    return result ?? fallback;
+  } catch (err) {
+    console.error(`[MaintenanceBillParser] ${step} で例外`, err);
+    return fallback;
+  }
+}
+
+function scorePlateMatch(candidate: RegExpMatchArray): number {
+  let score = 0;
+  if (candidate[1]) score += 10;
+  if (candidate[3]) score += 5;
+  if (Number(candidate[2]) >= 100) score += 3;
+  return score;
+}
+
+export function pickBestPlateMatch(line: string, re: RegExp): RegExpMatchArray | null {
+  const plateMatches = [...line.matchAll(new RegExp(re.source, "g"))];
+  let pm: RegExpMatchArray | null = null;
+  let bestScore = -1;
+  for (const candidate of plateMatches) {
+    const plate = cleanPlateNumber(
+      `${candidate[1] ?? ""}${candidate[2]}${candidate[3] ?? ""}${candidate[4]}`,
+    );
+    if (!isLenientPlateCandidate(plate)) continue;
+    const score = scorePlateMatch(candidate);
+    if (score >= bestScore) {
+      bestScore = score;
+      pm = candidate;
+    }
+  }
+  return pm;
+}
+
+function amountsFromLineText(s: string, min = MIN_LINE_AMOUNT): number[] {
+  LINE_AMOUNT_RE.lastIndex = 0;
+  return [...s.matchAll(LINE_AMOUNT_RE)]
+    .map((m) => parseAmount(m[0]))
+    .filter((n) => n >= min);
+}
+
+export type LenientLineAmounts = {
+  labor: number;
+  parts: number;
+  common: number;
+  consumptionTax?: number;
+};
+
+/** 行テキストから項目名付き金額を抽出（消費税は紙面明記のみ） */
+export function extractLabeledAmountsFromLine(line: string): LenientLineAmounts {
+  const out: LenientLineAmounts = {
+    labor: 0,
+    parts: 0,
+    common: 0,
+  };
+  const compact = line.replace(/\s/g, "");
+
+  const labeled: { re: RegExp; field: keyof LenientLineAmounts }[] = [
+    { re: /(?:技術料|工賃|工賃部品|整備代|請求金額|御買上|売上)[^0-9]{0,12}([0-9,，]+)/, field: "labor" },
+    { re: /(?:部品代|部品費|部品)[^0-9]{0,12}([0-9,，]+)/, field: "parts" },
+    { re: /(?:諸費用|外注費|外注|重量税|自賠責|印紙)[^0-9]{0,12}([0-9,，]+)/, field: "common" },
+    { re: /(?:消費税|地方消費税)[^0-9]{0,12}([0-9,，]+)/, field: "consumptionTax" },
+  ];
+
+  for (const { re, field } of labeled) {
+    const m = line.match(re) ?? compact.match(re);
+    if (!m?.[1]) continue;
+    const n = parseAmount(m[1]);
+    if (n <= 0) continue;
+    if (field === "consumptionTax") out.consumptionTax = n;
+    else out[field] = n;
+  }
+
+  if (out.labor + out.parts + out.common === 0) {
+    const nums = amountsFromLineText(line);
+    if (nums.length >= 3) {
+      out.labor = nums[0] ?? 0;
+      out.parts = nums[1] ?? 0;
+      out.common = nums[2] ?? 0;
+      if (nums.length >= 4 && out.consumptionTax === undefined) {
+        out.consumptionTax = nums[3];
+      }
+    } else if (nums.length === 2) {
+      out.labor = nums[0] ?? 0;
+      if (/消費税|税額|内税/.test(line)) {
+        if (out.consumptionTax === undefined) out.consumptionTax = nums[1];
+      } else {
+        out.common = nums[1] ?? 0;
+      }
+    } else if (nums.length === 1) {
+      out.labor = nums[0] ?? 0;
+    }
+  }
+
+  return out;
+}
+
+/** 行から登録番号・車両番号を緩和抽出 */
+export function extractLenientPlateFromLine(line: string): string {
+  const regLabel = line.match(
+    /(?:登録番号|車両番号|車番)\s*[：:]?\s*([0-9０-９a-zA-Zぁ-んァ-ン\-－ー]+)/,
+  );
+  if (regLabel?.[1]) return cleanPlateNumber(regLabel[1]);
+
+  const dash = line.match(/\b(\d{2,3})[-－](\d{1,4})\b/);
+  if (dash) return `${dash[1]}-${dash[2]}`;
+
+  const pm = pickBestPlateMatch(line, DETAIL_PLATE_RE);
+  if (pm) {
+    return cleanPlateNumber(
+      `${pm[1] ?? ""}${pm[2]}${pm[3] ?? ""}${pm[4]}`,
+    );
+  }
+
+  const loose = line.match(
+    /(?:^|[\s　,、])(\d{2,4})([ぁ-んァ-ンa-zA-Z])?(\d{0,4})?(?=[\s　¥￥,，]|$)/,
+  );
+  if (loose?.[1]) {
+    const plate = `${loose[1]}${loose[2] ?? ""}${loose[3] ?? ""}`;
+    if (isLenientPlateCandidate(plate)) return plate;
+  }
+
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +949,202 @@ function extractVendorFallback(t: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// 車両行の税区分
+// ---------------------------------------------------------------------------
+
+export type VehicleRowTaxCategory = "ex_tax" | "incl_tax" | "exempt";
+
+export const TAX_CATEGORY_OPTIONS: {
+  value: VehicleRowTaxCategory;
+  label: string;
+}[] = [
+  { value: "ex_tax", label: "税抜（+10%）" },
+  { value: "incl_tax", label: "税込（内税）" },
+  { value: "exempt", label: "非課税/諸費用" },
+];
+
+export const MAINTENANCE_TYPE_OPTIONS: {
+  value: MaintenanceType;
+  label: string;
+}[] = [
+  { value: "車検", label: "車検" },
+  { value: "3か月点検（法定）", label: "3か月点検（法定）" },
+  { value: "一般整備", label: "一般整備" },
+  { value: "その他", label: "その他" },
+];
+
+/** 作業内容テキストから整備種別を推測 */
+export function inferMaintenanceTypeFromText(text: string): MaintenanceType {
+  const t = text.replace(/\s/g, "");
+  if (/車検|法定検査|シェイケン/.test(t) && !/[３3][ヶカか]?月/.test(t)) {
+    return "車検";
+  }
+  if (/[３3][ヶカか]月|３ヶ月|3ヶ月|法定点検|法定.*点検/.test(t)) {
+    return "3か月点検（法定）";
+  }
+  if (/一般整備|オイル|タイヤ|消耗品|修理|交換|メンテ/.test(t)) {
+    return "一般整備";
+  }
+  return "その他";
+}
+
+/** 税区分に応じた消費税の自動計算値 */
+export function suggestRowConsumptionTax(
+  labor: number,
+  parts: number,
+  common: number,
+  taxCategory: VehicleRowTaxCategory = "ex_tax",
+): number {
+  if (taxCategory === "exempt") return 0;
+  return computeRowTaxBreakdown(labor, parts, common, taxCategory).tax;
+}
+
+/** 税込入力を税抜＋消費税に按分分割 */
+export function splitInclusiveAmounts(
+  labor: number,
+  parts: number,
+  common: number,
+): {
+  laborFee: number;
+  partsFee: number;
+  commonExpense: number;
+  consumptionTax: number;
+} {
+  const laborN = safeNumber(labor);
+  const partsN = safeNumber(parts);
+  const commonN = safeNumber(common);
+  const incl = laborN + partsN + commonN;
+  if (incl <= 0) {
+    return { laborFee: 0, partsFee: 0, commonExpense: 0, consumptionTax: 0 };
+  }
+  const exBase = Math.round(incl / 1.1);
+  const tax = incl - exBase;
+  const ratio = exBase / incl;
+  const laborEx = Math.round(laborN * ratio);
+  const partsEx = Math.round(partsN * ratio);
+  const commonEx = exBase - laborEx - partsEx;
+  return {
+    laborFee: laborEx,
+    partsFee: partsEx,
+    commonExpense: commonEx,
+    consumptionTax: tax,
+  };
+}
+
+/** 請求書表記から行の税区分を推測 */
+export function inferTaxCategoryFromText(
+  text: string,
+  lineContext = "",
+): VehicleRowTaxCategory {
+  const ctx = `${lineContext} ${text}`.replace(/\s/g, "");
+  if (/諸費用計|諸費用|非課税|印紙|重量税|自賠責/.test(ctx) && !/税込|内税/.test(ctx)) {
+    return "exempt";
+  }
+  if (/税込|内税|込み|総額|税込み/.test(ctx)) {
+    return "incl_tax";
+  }
+  if (/税抜|本体|売上金額|御買上|請求金額|整備代|部品代/.test(ctx)) {
+    return "ex_tax";
+  }
+  return "ex_tax";
+}
+
+/** 文書全体のデフォルト税区分（業者フォーマット） */
+export function inferDocumentDefaultTaxCategory(text: string): VehicleRowTaxCategory {
+  const t = text.replace(/\s/g, "");
+  if (/安井自動車|安井じどうしゃ/.test(t) && /工賃部品計.*税込|税込.*工賃/.test(t)) {
+    return "incl_tax";
+  }
+  if (/三菱ふそう|近畿ふそう|請求金額.*税抜|整備代.*税抜/.test(t)) {
+    return "ex_tax";
+  }
+  if (/ダイサブ|御買上額|今回売上金額/.test(t)) {
+    return "ex_tax";
+  }
+  return "ex_tax";
+}
+
+export type VehicleRowTaxBreakdown = {
+  exTaxBase: number;
+  tax: number;
+  totalIncl: number;
+  maintenanceExTax: number;
+  expensesExTax: number;
+};
+
+/** 税区分に応じて行の税抜・消費税・税込合計を算出 */
+export function computeRowTaxBreakdown(
+  labor: number,
+  parts: number,
+  common: number,
+  taxCategory: VehicleRowTaxCategory,
+): VehicleRowTaxBreakdown {
+  const laborN = safeNumber(labor);
+  const partsN = safeNumber(parts);
+  const commonN = safeNumber(common);
+  const inputSum = laborN + partsN + commonN;
+
+  if (inputSum <= 0) {
+    return {
+      exTaxBase: 0,
+      tax: 0,
+      totalIncl: 0,
+      maintenanceExTax: 0,
+      expensesExTax: 0,
+    };
+  }
+
+  if (taxCategory === "exempt") {
+    return {
+      exTaxBase: inputSum,
+      tax: 0,
+      totalIncl: inputSum,
+      maintenanceExTax: laborN + partsN,
+      expensesExTax: commonN,
+    };
+  }
+
+  if (taxCategory === "incl_tax") {
+    const totalIncl = inputSum;
+    const exTaxBase = Math.round(totalIncl / 1.1);
+    const tax = totalIncl - exTaxBase;
+    const maintInput = laborN + partsN;
+    const maintRatio = inputSum > 0 ? maintInput / inputSum : 1;
+    const maintenanceExTax = Math.round(exTaxBase * maintRatio);
+    const expensesExTax = exTaxBase - maintenanceExTax;
+    return { exTaxBase, tax, totalIncl, maintenanceExTax, expensesExTax };
+  }
+
+  const exTaxBase = inputSum;
+  const tax = Math.round(exTaxBase * 0.1);
+  const totalIncl = exTaxBase + tax;
+  return {
+    exTaxBase,
+    tax,
+    totalIncl,
+    maintenanceExTax: laborN + partsN,
+    expensesExTax: commonN,
+  };
+}
+
+export function computeVehicleRowTotal(
+  row: Pick<
+    ParsedVehicleEntry,
+    "laborFee" | "partsFee" | "commonExpense" | "consumptionTax" | "taxCategory"
+  >,
+): number {
+  const labor = safeNumber(row.laborFee);
+  const parts = safeNumber(row.partsFee);
+  const common = safeNumber(row.commonExpense);
+  const taxCat = row.taxCategory ?? "ex_tax";
+  const tax =
+    row.consumptionTax !== undefined && row.consumptionTax !== null
+      ? safeNumber(row.consumptionTax)
+      : suggestRowConsumptionTax(labor, parts, common, taxCat);
+  return labor + parts + common + tax;
+}
+
+// ---------------------------------------------------------------------------
 // 車両別内訳の解析
 // ---------------------------------------------------------------------------
 
@@ -356,8 +1158,63 @@ export interface ParsedVehicleEntry {
   partsFee: number;
   /** 諸費用（円） */
   commonExpense: number;
-  /** 行合計（円） */
+  /** 行合計（税込・円） */
   totalAmount: number;
+  /** 行の税区分（OCR推測 or 手動） */
+  taxCategory?: VehicleRowTaxCategory;
+  /** 行の消費税額（円）— OCR読取 or 手動上書き */
+  consumptionTax?: number;
+  /** 整備種別 */
+  maintenanceType?: MaintenanceType;
+}
+
+function finalizeVehicleEntry(
+  entry: Omit<ParsedVehicleEntry, "totalAmount"> & { totalAmount?: number },
+): ParsedVehicleEntry {
+  let taxCategory = entry.taxCategory ?? "ex_tax";
+  let labor = safeNumber(entry.laborFee);
+  let parts = safeNumber(entry.partsFee);
+  let common = safeNumber(entry.commonExpense);
+  let consumptionTax = entry.consumptionTax;
+
+  if (taxCategory === "incl_tax") {
+    const split = splitInclusiveAmounts(labor, parts, common);
+    labor = split.laborFee;
+    parts = split.partsFee;
+    common = split.commonExpense;
+    consumptionTax = split.consumptionTax;
+    taxCategory = "ex_tax";
+  }
+
+  if (consumptionTax === undefined || consumptionTax === null) {
+    consumptionTax = suggestRowConsumptionTax(labor, parts, common, taxCategory);
+  }
+
+  const maintenanceType =
+    entry.maintenanceType ??
+    inferMaintenanceTypeFromText(entry.workDescription ?? "");
+
+  const totalAmount =
+    entry.totalAmount && entry.totalAmount > 0
+      ? entry.totalAmount
+      : computeVehicleRowTotal({
+          laborFee: labor,
+          partsFee: parts,
+          commonExpense: common,
+          consumptionTax,
+          taxCategory,
+        });
+
+  return {
+    ...entry,
+    laborFee: labor,
+    partsFee: parts,
+    commonExpense: common,
+    taxCategory,
+    consumptionTax,
+    maintenanceType,
+    totalAmount,
+  };
 }
 
 /**
@@ -370,43 +1227,388 @@ export interface ParsedVehicleEntry {
  *  ④ 地域名なし車番: "101 あ 600"（ダイサブ様スタイル）
  *  ⑤ 地域名あり車番: "京都101あ600"（安井自動車様スタイル）
  */
+/** ダイサブ明細: 御買上額（税抜）＋消費税 */
+function parseDaisabuDetailLines(text: string): ParsedVehicleEntry[] {
+  const compact = text.replace(/\s/g, "");
+  if (!/ダ[イィい][サさサ][ブぶブ]|ダィサブ|ダイサブ/.test(compact)) return [];
+  const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  const results: ParsedVehicleEntry[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/合計|小計|請求|売上金額|御請求/.test(line) && !DETAIL_PLATE_RE.test(line)) {
+      continue;
+    }
+    const pm = pickBestPlateMatch(line, DETAIL_PLATE_RE);
+    if (!pm) continue;
+
+    const vehicle = cleanPlateNumber(
+      `${pm[1] ?? ""}${pm[2]}${pm[3] ?? ""}${pm[4]}`,
+    );
+
+    const after = line.slice((pm.index ?? 0) + pm[0].length);
+    let amounts = amountsFromLineText(after);
+
+    if (amounts.length === 0) {
+      for (let j = i + 1; j <= Math.min(i + 2, lines.length - 1); j++) {
+        const nxt = lines[j]!;
+        if (DETAIL_PLATE_RE.test(nxt)) break;
+        amounts = amountsFromLineText(nxt);
+        if (amounts.length > 0) break;
+      }
+    }
+
+    if (amounts.length === 0) continue;
+
+    const exTax = amounts[0]!;
+    const tax = amounts[1] ?? Math.round(exTax * 0.1);
+    const desc = after
+      .replace(LINE_AMOUNT_RE, "")
+      .replace(/[^\u3040-\u9fff\u30a0-\u30ffa-zA-Z]/g, " ")
+      .trim()
+      .slice(0, 40);
+    const lineContext = `${desc} ${line}`;
+
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: vehicle,
+        workDescription: desc,
+        laborFee: exTax,
+        partsFee: 0,
+        commonExpense: 0,
+        consumptionTax: tax,
+        maintenanceType: inferMaintenanceTypeFromText(lineContext),
+        totalAmount: exTax + tax,
+        taxCategory: "ex_tax",
+      }),
+    );
+  }
+  return results;
+}
+
+/** 安井自動車: 工賃部品計（税込）・諸費用計（税込）— 1台1行 */
+function parseYasuiDetailLines(text: string): ParsedVehicleEntry[] {
+  const compact = text.replace(/\s/g, "");
+  if (!/安井自動車|安井じどうしゃ|YASUI/i.test(compact)) return [];
+  const rawLines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  const lines = rawLines.map((l) => normalizeOcrText(l));
+  const results: ParsedVehicleEntry[] = [];
+  const seenKeys = new Set<string>();
+  const docIncl = inferTaxCategoryFromText(text) === "incl_tax";
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const rawLine = rawLines[i]!;
+    if (isClientOrHeaderLine(line)) continue;
+    if (/合計|小計|今回|売上|御請求/.test(line) && !DETAIL_PLATE_RE.test(line)) {
+      continue;
+    }
+
+    const pm = pickBestPlateMatch(line, DETAIL_PLATE_RE);
+    if (!pm) continue;
+
+    const vehicle = cleanPlateNumber(
+      `${pm[1] ?? ""}${pm[2]}${pm[3] ?? ""}${pm[4]}`,
+    );
+    if (!isValidInvoiceVehicleNumber(vehicle)) continue;
+
+    const key = normalizePlateKey(vehicle);
+    if (seenKeys.has(key)) continue;
+
+    const after = rawLine.slice((pm.index ?? 0) + pm[0].length);
+    const labeled = extractLabeledAmountsFromLine(after || rawLine);
+    let amounts = amountsFromLineText(after);
+
+    if (amounts.length === 0) {
+      for (let j = i + 1; j <= Math.min(i + 2, lines.length - 1); j++) {
+        const nxt = rawLines[j]!;
+        if (DETAIL_PLATE_RE.test(lines[j]!)) break;
+        amounts.push(...amountsFromLineText(nxt));
+        if (amounts.length > 0) break;
+      }
+    }
+
+    const laborRaw = labeled.labor || amounts[0] || 0;
+    const miscRaw = labeled.common || (amounts.length >= 2 ? amounts[1]! : 0);
+    const explicitTax = /消費税|税額/.test(line)
+      ? labeled.consumptionTax
+      : undefined;
+
+    if (laborRaw + miscRaw <= 0 && explicitTax === undefined) continue;
+
+    const ctx = `${line} ${text.slice(0, 500)}`;
+    const workDescription = after
+      .replace(LINE_AMOUNT_RE, "")
+      .trim()
+      .slice(0, 40);
+    const isIncl =
+      inferTaxCategoryFromText(ctx, line) === "incl_tax" || docIncl;
+
+    let laborFee = laborRaw;
+    let partsFee = labeled.parts;
+    let commonExpense = miscRaw;
+    let consumptionTax = explicitTax;
+    let taxCategory: VehicleRowTaxCategory =
+      miscRaw > 0 && laborRaw === 0 ? "exempt" : "ex_tax";
+
+    if (isIncl && explicitTax === undefined) {
+      let taxSum = 0;
+      if (laborRaw > 0) {
+        const s = splitInclusiveAmounts(laborRaw, 0, 0);
+        laborFee = s.laborFee;
+        taxSum += s.consumptionTax;
+      }
+      if (miscRaw > 0) {
+        const s = splitInclusiveAmounts(0, 0, miscRaw);
+        commonExpense = s.commonExpense;
+        taxSum += s.consumptionTax;
+      }
+      consumptionTax = taxSum;
+      taxCategory = "ex_tax";
+    }
+
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: vehicle,
+        workDescription,
+        laborFee,
+        partsFee,
+        commonExpense,
+        consumptionTax,
+        maintenanceType: inferMaintenanceTypeFromText(`${workDescription} ${rawLine}`),
+        taxCategory,
+      }),
+    );
+    seenKeys.add(key);
+  }
+  return results;
+}
+
+/**
+ * 最終フォールバック: 書式不問で行単位に車番・金額・種別を緩和抽出。
+ * エラーは投げず、取れた行だけ返す（0件でも []）。
+ */
+export function parseLenientVehicleExtraction(
+  text: string,
+  billType: BillType,
+): ParsedVehicleEntry[] {
+  const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  const results: ParsedVehicleEntry[] = [];
+  const defaultTax = inferDocumentDefaultTaxCategory(text);
+
+  for (const line of lines) {
+    if (/^(?:合計|小計|御請求|請求総額|消費税合計)/.test(line)) continue;
+    if (/^(?:技術料|部品代|諸費用|車番|登録番号)\s*$/i.test(line)) continue;
+
+    const plate = extractLenientPlateFromLine(line);
+    if (!plate) continue;
+
+    const labeled = extractLabeledAmountsFromLine(
+      plate ? line.replace(plate, " ") : line,
+    );
+    let labor = labeled.labor;
+    let parts = labeled.parts;
+    let common = labeled.common;
+
+    if (labor + parts + common === 0) {
+      const nums = amountsFromLineText(line);
+      if (billType === "部品代") {
+        parts = nums[0] ?? 0;
+      } else if (billType === "整備費") {
+        labor = nums[0] ?? 0;
+      } else if (nums.length >= 3) {
+        labor = nums[0] ?? 0;
+        parts = nums[1] ?? 0;
+        common = nums[2] ?? 0;
+      } else if (nums.length >= 2) {
+        labor = nums[0] ?? 0;
+        common = nums[1] ?? 0;
+      } else {
+        labor = nums[0] ?? 0;
+      }
+    }
+
+    if (labor + parts + common === 0 && labeled.consumptionTax === undefined) {
+      continue;
+    }
+
+    const workDescription = line
+      .replace(LINE_AMOUNT_RE, "")
+      .replace(plate, "")
+      .trim()
+      .slice(0, 40);
+
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: plate,
+        workDescription,
+        laborFee: labor,
+        partsFee: parts,
+        commonExpense: common,
+        consumptionTax: labeled.consumptionTax,
+        maintenanceType: inferMaintenanceTypeFromText(line),
+        taxCategory: inferTaxCategoryFromText(text, line) ?? defaultTax,
+      }),
+    );
+  }
+
+  return mergeVehicleEntries(results);
+}
+
+/**
+ * 3社（ダイサブ・安井・三菱ふそう）専用パーサーのみ実行。
+ * 超緩和パーサーは使わない（OCR誤検出行の混入を防ぐ）。
+ */
+export function parseVendorVehicleTable(
+  text: string,
+  _billType: BillType,
+): ParsedVehicleEntry[] {
+  return safeParseStep(
+    "parseVendorVehicleTable",
+    () => {
+      const compact = text.replace(/\s/g, "");
+      const rawCompact = text.replace(/\s/g, "");
+      const results: ParsedVehicleEntry[] = [];
+
+      const isDaisabu =
+        /ダ[イィい][サさサ][ブぶブ]|ダィサブ|ダイサブ|DAISAB/i.test(compact) ||
+        /ダ[イィい][サさサ][ブぶブ]|ダィサブ|ダイサブ|DAISAB/i.test(rawCompact);
+      const isYasui =
+        /安井自動車|安井じどうしゃ|YASUI/i.test(compact) ||
+        /安井自動車|安井じどうしゃ|YASUI/i.test(rawCompact);
+      const isFuso =
+        /三菱ふそう|三菱フソウ|近畿ふそう|近畿フソウ|ミツビシフソウ|MITSUBISHI|FUSO/i.test(
+          compact,
+        ) ||
+        /三菱ふそう|三菱フソウ|近畿ふそう|近畿フソウ|ミツビシフソウ|MITSUBISHI|FUSO/i.test(
+          rawCompact,
+        );
+
+      if (isDaisabu) {
+        results.push(...parseDaisabuDetailLines(text));
+      }
+      if (isYasui) {
+        results.push(...parseYasuiDetailLines(text));
+      }
+      if (isFuso) {
+        results.push(...parseFusoVehicleTable(text));
+      }
+
+      return mergeVehicleEntries(results);
+    },
+    [],
+  );
+}
+
 export function parseVehicleTable(
+  text: string,
+  billType: BillType,
+): ParsedVehicleEntry[] {
+  return safeParseStep(
+    "parseVehicleTable",
+    () => parseVehicleTableInner(text, billType),
+    parseLenientVehicleExtraction(text, billType),
+  );
+}
+
+function parseVehicleTableInner(
   text: string,
   billType: BillType,
 ): ParsedVehicleEntry[] {
   const normalized = normalizeOcrText(text);
   const fixed = fixOcrPlateChars(normalized);
   const compact = fixed.replace(/\s/g, "");
+  const rawCompact = text.replace(/\s/g, "");
+  const defaultTax = inferDocumentDefaultTaxCategory(text);
 
-  const isFuso = /三菱ふそう|近畿ふそう|ミツビシフソウ/.test(compact);
+  const isFuso =
+    /三菱ふそう|三菱フソウ|近畿ふそう|近畿フソウ|ミツビシフソウ|MITSUBISHI|FUSO/i.test(compact) ||
+    /三菱ふそう|三菱フソウ|近畿ふそう|近畿フソウ|ミツビシフソウ|MITSUBISHI|FUSO/i.test(rawCompact);
+  const isDaisabu =
+    /ダ[イィい][サさサ][ブぶブ]|ダィサブ|ダイサブ|DAISAB/i.test(compact) ||
+    /ダ[イィい][サさサ][ブぶブ]|ダィサブ|ダイサブ|DAISAB/i.test(rawCompact);
+  const isYasui =
+    /安井自動車|安井じどうしゃ|YASUI/i.test(compact) ||
+    /安井自動車|安井じどうしゃ|YASUI/i.test(rawCompact);
 
-  const core = parseVehicleTableCore(fixed, billType);
-  const fuso = isFuso ? parseFusoVehicleTable(fixed) : [];
+  const vendorFirst: ParsedVehicleEntry[] = [];
+  // 業者専用パーサーは行構造を保つため生テキストを使用（日付と伝票番号の結合を防ぐ）
+  if (isDaisabu) {
+    vendorFirst.push(
+      ...safeParseStep("parseDaisabuDetailLines", () => parseDaisabuDetailLines(text), []),
+    );
+  }
+  if (isYasui) {
+    vendorFirst.push(
+      ...safeParseStep("parseYasuiDetailLines", () => parseYasuiDetailLines(text), []),
+    );
+  }
+
+  const vendorParsed = vendorFirst.length > 0;
+  const core =
+    vendorParsed && (isYasui || isDaisabu || isFuso)
+      ? []
+      : safeParseStep(
+          "parseVehicleTableCore",
+          () => parseVehicleTableCore(fixed, billType, defaultTax),
+          [],
+        );
+  const fuso = isFuso
+    ? safeParseStep("parseFusoVehicleTable", () => parseFusoVehicleTable(text), [])
+    : [];
+
   const existingKeys = new Set(
-    [...core, ...fuso].map((e) => normalizePlateKey(e.vehicleNumber)),
+    [...vendorFirst, ...core, ...fuso].map((e) =>
+      normalizePlateKey(e.vehicleNumber),
+    ),
   );
 
-  const ultra = parseVehicleTableUltraLoose(fixed, billType).filter((e) => {
+  const ultra = safeParseStep(
+    "parseVehicleTableUltraLoose",
+    () => parseVehicleTableUltraLoose(fixed, billType, defaultTax),
+    [],
+  ).filter((e) => {
     const plate = cleanPlateNumber(e.vehicleNumber);
-    if (!isPlausiblePlate(plate)) return false;
+    if (!isLenientPlateCandidate(plate)) return false;
     const key = normalizePlateKey(plate);
     if (existingKeys.has(key)) return false;
     existingKeys.add(key);
     return true;
   });
 
-  const all = [...core, ...fuso, ...ultra];
-  if (all.length === 0) all.push(...parseVehicleTableFallback(fixed, billType));
+  const all = [...vendorFirst, ...core, ...fuso, ...ultra];
+  if (all.length === 0) {
+    all.push(
+      ...safeParseStep(
+        "parseVehicleTableFallback",
+        () => parseVehicleTableFallback(fixed, billType, defaultTax),
+        [],
+      ),
+    );
+  }
+  if (all.length === 0) {
+    console.error(
+      "[MaintenanceBillParser] 全パーサーで車両0件 → 緩和抽出にフォールバック",
+      { textLength: text.length, preview: text.slice(0, 1500) },
+    );
+    return parseLenientVehicleExtraction(text, billType);
+  }
 
-  return mergeVehicleEntries(all);
+  return mergeVehicleEntries(
+    all.map((e) =>
+      finalizeVehicleEntry({
+        ...e,
+        taxCategory: e.taxCategory ?? defaultTax,
+      }),
+    ),
+  );
 }
 
-/** 複数パスで得た車両行をマージ（緩い車番キーで重複排除、情報量の多い方を優先） */
-function mergeVehicleEntries(entries: ParsedVehicleEntry[]): ParsedVehicleEntry[] {
+/** 複数パスで得た車両行をマージ（登録番号キーで重複排除、情報量の多い方を優先） */
+export function mergeVehicleEntries(entries: ParsedVehicleEntry[]): ParsedVehicleEntry[] {
   const map = new Map<string, ParsedVehicleEntry>();
   for (const e of entries) {
     const plate = cleanPlateNumber(e.vehicleNumber);
-    if (!plate || !isPlausiblePlate(plate)) continue;
+    if (!plate || !isLenientPlateCandidate(plate)) continue;
     const key = normalizePlateKey(plate);
     const cleaned = { ...e, vehicleNumber: plate };
     const existing = map.get(key);
@@ -441,6 +1643,7 @@ function scoreEntry(e: ParsedVehicleEntry): number {
 function parseVehicleTableCore(
   text: string,
   billType: BillType,
+  defaultTax: VehicleRowTaxCategory = "ex_tax",
 ): ParsedVehicleEntry[] {
   const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
   const results: ParsedVehicleEntry[] = [];
@@ -547,14 +1750,23 @@ function parseVehicleTableCore(
     const descMatch = afterPlate.match(/^[\s　]*([^\d¥￥,，\s　]{2,20})/);
     const workDescription = descMatch?.[1]?.trim() ?? "";
 
-    results.push({
-      vehicleNumber: cleanPlateNumber(vehicleNumber),
-      workDescription,
-      laborFee,
-      partsFee,
-      commonExpense,
-      totalAmount,
-    });
+    const lineTax = inferTaxCategoryFromText(text, line);
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: cleanPlateNumber(vehicleNumber),
+        workDescription,
+        laborFee,
+        partsFee,
+        commonExpense,
+        totalAmount,
+        taxCategory:
+          commonExpense > 0 && laborFee + partsFee === 0
+            ? "exempt"
+            : lineTax !== "ex_tax"
+              ? lineTax
+              : defaultTax,
+      }),
+    );
   }
 
   return results;
@@ -584,53 +1796,64 @@ function parseFusoVehicleTable(text: string): ParsedVehicleEntry[] {
   const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
   const results: ParsedVehicleEntry[] = [];
 
-  const PLATE = /([一-龠々]{2,6})?\s*(\d{1,3})\s*([あ-ん]?)\s*(\d{1,4})/;
-  const AMT = /[¥￥]?\s*[1-9]\d{0,2}(?:,\d{3})+|\b[1-9]\d{3,6}\b/g;
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const lineClean = line.replace(/^車両番号\s*/, "");
-    if (/合計|小計|消費税|御請求|請求総額/.test(lineClean) && !PLATE.test(lineClean)) continue;
+    if (/合計|小計|御請求|請求総額/.test(lineClean) && !DETAIL_PLATE_RE.test(lineClean)) {
+      continue;
+    }
 
-    const m = PLATE.exec(lineClean);
-    if (!m || !m[2]) continue;
+    const pm = pickBestPlateMatch(lineClean, DETAIL_PLATE_RE);
+    if (!pm) continue;
 
-    const region = m[1] ?? "";
-    const kana = m[3] ?? "";
-    const vehicleNumber = `${region}${m[2]}${kana}${m[4]}`;
-    if (vehicleNumber.replace(/\d/g, "").length === 0 && !region) continue;
+    const vehicle = cleanPlateNumber(
+      `${pm[1] ?? ""}${pm[2]}${pm[3] ?? ""}${pm[4]}`,
+    );
+    if (!isLenientPlateCandidate(vehicle)) continue;
 
-    const after = lineClean.slice((m.index ?? 0) + m[0].length);
-    let amounts = amountsFromText(after, AMT, 500);
+    const after = lineClean.slice((pm.index ?? 0) + pm[0].length);
+    const labeled = extractLabeledAmountsFromLine(after || lineClean);
+    let amounts = amountsFromLineText(after);
 
-    // 税抜金額が次行にある場合
     if (amounts.length === 0) {
       for (let j = i + 1; j <= Math.min(i + 3, lines.length - 1); j++) {
         const nxt = lines[j]!.replace(/^車両番号\s*/, "");
-        if (PLATE.test(nxt)) break;
-        if (/税抜|請求金額|金額/.test(nxt) || amounts.length === 0) {
-          amounts.push(...amountsFromText(nxt, AMT, 500));
+        if (DETAIL_PLATE_RE.test(nxt)) break;
+        if (/税抜|請求金額|金額|消費税/.test(nxt) || amounts.length === 0) {
+          amounts.push(...amountsFromLineText(nxt));
         }
         if (amounts.length > 0) break;
       }
     }
 
-    if (amounts.length === 0) continue;
+    const labor = labeled.labor || amounts[0] || 0;
+    const parts = labeled.parts || 0;
+    const common = labeled.common || 0;
+    const explicitTax = labeled.consumptionTax;
+    const fallbackAmt = amounts[amounts.length - 1] ?? 0;
 
-    const totalAmount = amounts[amounts.length - 1] ?? 0;
-    const laborFee = amounts.length >= 2 ? (amounts[0] ?? 0) : totalAmount;
+    if (labor + parts + common + fallbackAmt <= 0 && explicitTax === undefined) continue;
 
-    const plate = cleanPlateNumber(vehicleNumber);
-    if (!isPlausiblePlate(plate)) continue;
+    const exTax = labor + parts + common > 0 ? labor + parts + common : fallbackAmt;
+    let taxAmt = explicitTax;
+    if (taxAmt === undefined && amounts.length >= 2) {
+      const second = amounts[1]!;
+      if (second > 0 && second <= exTax) taxAmt = second;
+    }
 
-    results.push({
-      vehicleNumber: plate,
-      workDescription: "",
-      laborFee,
-      partsFee: 0,
-      commonExpense: 0,
-      totalAmount,
-    });
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber: vehicle,
+        workDescription: after.replace(LINE_AMOUNT_RE, "").trim().slice(0, 40),
+        laborFee: labor || exTax,
+        partsFee: parts,
+        commonExpense: common,
+        consumptionTax: taxAmt,
+        maintenanceType: inferMaintenanceTypeFromText(lineClean),
+        totalAmount: exTax + (taxAmt ?? 0),
+        taxCategory: inferTaxCategoryFromText(text, lineClean),
+      }),
+    );
   }
 
   return results;
@@ -648,6 +1871,7 @@ function parseFusoVehicleTable(text: string): ParsedVehicleEntry[] {
 function parseVehicleTableUltraLoose(
   text: string,
   billType: BillType,
+  defaultTax: VehicleRowTaxCategory = "ex_tax",
 ): ParsedVehicleEntry[] {
   const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
   const results: ParsedVehicleEntry[] = [];
@@ -711,16 +1935,19 @@ function parseVehicleTableUltraLoose(
       else laborFee = amounts[0] ?? totalAmount;
 
       const plate = cleanPlateNumber(vehicleNumber);
-      if (!isPlausiblePlate(plate)) continue;
+      if (!isLenientPlateCandidate(plate)) continue;
 
-      results.push({
-        vehicleNumber: plate,
-        workDescription: "",
-        laborFee,
-        partsFee,
-        commonExpense: 0,
-        totalAmount,
-      });
+      results.push(
+        finalizeVehicleEntry({
+          vehicleNumber: plate,
+          workDescription: "",
+          laborFee,
+          partsFee,
+          commonExpense: 0,
+          totalAmount,
+          taxCategory: defaultTax,
+        }),
+      );
     }
   }
 
@@ -734,6 +1961,7 @@ function parseVehicleTableUltraLoose(
 function parseVehicleTableFallback(
   text: string,
   billType: BillType,
+  defaultTax: VehicleRowTaxCategory = "ex_tax",
 ): ParsedVehicleEntry[] {
   const results: ParsedVehicleEntry[] = [];
   const LOOSE_PLATE = /(\d{2,3})\s*([あ-ん])\s*(\d{1,4})/g;
@@ -753,19 +1981,22 @@ function parseVehicleTableFallback(
 
     const total = amounts[amounts.length - 1] ?? 0;
     const feeA = amounts.length >= 2 ? (amounts[amounts.length - 2] ?? 0) : total;
-    results.push({
-      vehicleNumber,
-      workDescription: "",
-      laborFee: billType === "部品代" ? 0 : feeA,
-      partsFee: billType === "部品代" ? feeA : 0,
-      commonExpense: 0,
-      totalAmount: total,
-    });
+    results.push(
+      finalizeVehicleEntry({
+        vehicleNumber,
+        workDescription: "",
+        laborFee: billType === "部品代" ? 0 : feeA,
+        partsFee: billType === "部品代" ? feeA : 0,
+        commonExpense: 0,
+        totalAmount: total,
+        taxCategory: defaultTax,
+      }),
+    );
   }
   return results;
 }
 
-/** 車両別内訳から請求書ヘッダー金額を集計 */
+/** 車両別内訳から請求書ヘッダー金額を集計（税区分を考慮） */
 export function computeBillTotalsFromVehicles(
   rows: ParsedVehicleEntry[],
 ): {
@@ -774,34 +2005,42 @@ export function computeBillTotalsFromVehicles(
   taxAmount: number;
   totalAmount: number;
 } {
-  const labor = rows.reduce((s, r) => s + safeNumber(r.laborFee), 0);
-  const parts = rows.reduce((s, r) => s + safeNumber(r.partsFee), 0);
-  const common = rows.reduce((s, r) => s + safeNumber(r.commonExpense), 0);
-  const lineTotals = rows.reduce((s, r) => {
-    const laborP = safeNumber(r.laborFee);
-    const partsP = safeNumber(r.partsFee);
-    const commonP = safeNumber(r.commonExpense);
-    const t = safeNumber(r.totalAmount) > 0
-      ? safeNumber(r.totalAmount)
-      : laborP + partsP + commonP;
-    return s + t;
-  }, 0);
-  const maintenance = labor + parts;
-  const tax = Math.max(0, lineTotals - maintenance - common);
+  let maintenanceExTax = 0;
+  let expensesExTax = 0;
+  let taxAmount = 0;
+  let totalAmount = 0;
+
+  for (const row of rows) {
+    const labor = safeNumber(row.laborFee);
+    const parts = safeNumber(row.partsFee);
+    const common = safeNumber(row.commonExpense);
+    const taxCat = row.taxCategory ?? "ex_tax";
+    const tax =
+      row.consumptionTax !== undefined && row.consumptionTax !== null
+        ? safeNumber(row.consumptionTax)
+        : suggestRowConsumptionTax(labor, parts, common, taxCat);
+
+    maintenanceExTax += labor + parts;
+    expensesExTax += common;
+    taxAmount += tax;
+    totalAmount += labor + parts + common + tax;
+  }
+
   return {
-    maintenanceSubtotalExTax: safeNumber(maintenance),
-    expensesSubtotal: safeNumber(common),
-    taxAmount: safeNumber(tax),
-    totalAmount: safeNumber(lineTotals),
+    maintenanceSubtotalExTax: safeNumber(maintenanceExTax),
+    expensesSubtotal: safeNumber(expensesExTax),
+    taxAmount: safeNumber(taxAmount),
+    totalAmount: safeNumber(totalAmount),
   };
 }
 
 /** ParsedVehicleEntry[] を VehicleExpenseRecord[] に変換 */
 export function buildVehicleExpenseRecords(
-  entries: ParsedVehicleEntry[],
+  entries: ParsedVehicleEntry[] | null | undefined,
   parentBill: VehicleMaintenanceBill,
 ): VehicleExpenseRecord[] {
-  return entries.map((e) => ({
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  return safeEntries.map((e) => ({
     id: crypto.randomUUID(),
     billingMonth: parentBill.billingMonth,
     vendorName: parentBill.vendorName,
@@ -811,7 +2050,16 @@ export function buildVehicleExpenseRecords(
     laborFee: e.laborFee,
     partsFee: e.partsFee,
     commonExpense: e.commonExpense,
-    totalAmount: e.totalAmount,
+    consumptionTax:
+      e.consumptionTax ??
+      suggestRowConsumptionTax(
+        e.laborFee,
+        e.partsFee,
+        e.commonExpense,
+        e.taxCategory ?? "ex_tax",
+      ),
+    maintenanceType: e.maintenanceType ?? inferMaintenanceTypeFromText(e.workDescription),
+    totalAmount: computeVehicleRowTotal(e),
     parentBillId: parentBill.id,
     createdAt: new Date().toISOString(),
     sourceFileName: parentBill.sourceFileName,
@@ -829,10 +2077,20 @@ export function buildVehicleExpenseRecords(
  * コロンのない行でも、金額パターン（数字）を含む行から補完的に取得する。
  */
 export function parseBillText(text: string): Partial<ParsedBillText> {
+  const detected = detectVendorAndBillType(text);
+  return safeParseStep("parseBillText", () => parseBillTextInner(text), {
+    rawText: text,
+    vendorName: detected.vendorName,
+    billType: detected.billType,
+  });
+}
+
+function parseBillTextInner(text: string): Partial<ParsedBillText> {
   const result: Partial<ParsedBillText> = { rawText: text };
 
   // OCR テキストを正規化してから解析
   const normalized = normalizeOcrText(text);
+  const aggregated = extractAggregatedTaxFromText(text);
 
   // 業者名と種別を先行して自動検出（正規化後テキストを使用）
   const detected = detectVendorAndBillType(normalized);
@@ -886,10 +2144,11 @@ export function parseBillText(text: string): Partial<ParsedBillText> {
         continue;
       }
 
-      // 整備費（税抜）- "今回売上金額（税抜）" や "整備費用請求小計" など
+      // 整備費（税抜）
       if (
         !result.maintenanceSubtotalExTax &&
-        /(?:今回売上金額|売上金額|整備費用)/.test(key)
+        /(?:今回売上金額|売上金額|本体価格|税抜|小計|整備費用)/.test(key) &&
+        !/税込|消費税/.test(key)
       ) {
         const n = parseAmount(val);
         if (n > 0) result.maintenanceSubtotalExTax = n;
@@ -897,14 +2156,22 @@ export function parseBillText(text: string): Partial<ParsedBillText> {
       }
 
       // 消費税
-      if (!result.taxAmount && /消費税/.test(key)) {
+      if (
+        !result.taxAmount &&
+        /(?:消費税|地方消費税)/.test(key) &&
+        !/税抜|税込|本体/.test(key)
+      ) {
         const n = parseAmount(val);
         if (n > 0) result.taxAmount = n;
         continue;
       }
 
       // 諸費用小計
-      if (!result.expensesSubtotal && /諸費用/.test(key)) {
+      if (
+        !result.expensesSubtotal &&
+        /諸費用/.test(key) &&
+        !/消費税|税込/.test(key)
+      ) {
         const n = parseAmount(val);
         if (n > 0) result.expensesSubtotal = n;
         continue;
@@ -922,23 +2189,48 @@ export function parseBillText(text: string): Partial<ParsedBillText> {
     }
 
     // ── OCR テキスト特有: "御請求総額 333431" のようにスペース区切りのキー行 ──
-    // ※ \d{1,3}(?:,\d{3})+ は "26,031" のような2桁先頭もヒット
-    const OCR_AMT_RE = /[1-9]\d{0,2}(?:,\d{3})+|\b\d{4,7}\b/;
     if (!result.totalAmount && /御請求|ご請求|請求総額/.test(line)) {
       const m = line.match(OCR_AMT_RE);
       if (m) { const n = parseAmount(m[0]); if (n > 0) result.totalAmount = n; }
     }
-    if (!result.taxAmount && /消費税/.test(line) && colonIdx < 0) {
+    if (
+      /消費税|地方消費税/.test(line) &&
+      colonIdx < 0 &&
+      !/税抜|税込|本体/.test(line)
+    ) {
+      OCR_AMT_RE.lastIndex = 0;
       const m = line.match(OCR_AMT_RE);
-      if (m) { const n = parseAmount(m[0]); if (n > 0) result.taxAmount = n; }
+      if (m) {
+        const n = parseAmount(m[0]);
+        if (n > 0) result.taxAmount = (result.taxAmount ?? 0) + n;
+      }
     }
-    if (!result.maintenanceSubtotalExTax && /今回売上|売上金額|整備費/.test(line) && colonIdx < 0) {
+    if (
+      /今回売上|売上金額|本体価格|税抜|小計/.test(line) &&
+      colonIdx < 0 &&
+      !/税込|消費税/.test(line)
+    ) {
+      OCR_AMT_RE.lastIndex = 0;
       const m = line.match(OCR_AMT_RE);
-      if (m) { const n = parseAmount(m[0]); if (n > 0) result.maintenanceSubtotalExTax = n; }
+      if (m) {
+        const n = parseAmount(m[0]);
+        if (n > 0) {
+          result.maintenanceSubtotalExTax =
+            (result.maintenanceSubtotalExTax ?? 0) + n;
+        }
+      }
     }
-    if (!result.expensesSubtotal && /諸費用/.test(line) && colonIdx < 0) {
+    if (
+      /諸費用/.test(line) &&
+      colonIdx < 0 &&
+      !/消費税|税込|請求小計/.test(line)
+    ) {
+      OCR_AMT_RE.lastIndex = 0;
       const m = line.match(OCR_AMT_RE);
-      if (m) { const n = parseAmount(m[0]); if (n > 0) result.expensesSubtotal = n; }
+      if (m) {
+        const n = parseAmount(m[0]);
+        if (n > 0) result.expensesSubtotal = n;
+      }
     }
 
     // ── OCR: 元号日付パターン（コロンなし行）──────────────────────
@@ -955,7 +2247,16 @@ export function parseBillText(text: string): Partial<ParsedBillText> {
     }
   }
 
-  return result;
+  const merged: Partial<ParsedBillText> = {
+    ...result,
+    totalAmount: result.totalAmount || aggregated.totalAmount,
+    maintenanceSubtotalExTax:
+      result.maintenanceSubtotalExTax || aggregated.maintenanceSubtotalExTax,
+    taxAmount: result.taxAmount || aggregated.taxAmount,
+    expensesSubtotal: result.expensesSubtotal || aggregated.expensesSubtotal,
+  };
+
+  return resolveBillTaxBreakdown(merged);
 }
 
 // ---------------------------------------------------------------------------
@@ -965,10 +2266,21 @@ export function parseBillText(text: string): Partial<ParsedBillText> {
 /** パース結果から VehicleMaintenanceBill オブジェクトを生成 */
 export function buildMaintenanceBill(
   parsed: Partial<ParsedBillText>,
-  override: Partial<Pick<VehicleMaintenanceBill, "memo" | "sourceFileName" | "billType">>,
+  override: Partial<
+    Pick<
+      VehicleMaintenanceBill,
+      | "memo"
+      | "sourceFileName"
+      | "billType"
+      | "id"
+      | "createdAt"
+      | "ocrOriginalData"
+      | "editedData"
+    >
+  > = {},
 ): VehicleMaintenanceBill {
   return {
-    id: crypto.randomUUID(),
+    id: override.id ?? crypto.randomUUID(),
     vendorName: parsed.vendorName ?? "",
     clientName: parsed.clientName ?? "",
     billingMonth: parsed.billingMonth ?? "",
@@ -980,7 +2292,9 @@ export function buildMaintenanceBill(
     expensesSubtotal: parsed.expensesSubtotal ?? 0,
     memo: override.memo ?? "",
     sourceFileName: override.sourceFileName ?? "",
-    createdAt: new Date().toISOString(),
+    createdAt: override.createdAt ?? new Date().toISOString(),
+    ocrOriginalData: override.ocrOriginalData,
+    editedData: override.editedData,
   };
 }
 

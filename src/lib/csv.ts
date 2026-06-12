@@ -1,3 +1,4 @@
+import { sumAllocationExpenses } from "./allocation-expense-utils";
 import { getRecordAlerts } from "./alerts";
 import { reportStatusLabel } from "./report-status";
 import {
@@ -293,26 +294,25 @@ export function exportFullMonthlyPack(
   records: DailyRecord[],
   yearMonth: string,
   masters: MasterData,
-  expenseLabel: string,
-  totalExpense: number,
 ): void {
   const summary = buildMonthlySummary(records, yearMonth, masters);
   exportDailyRecordsCsv(records, yearMonth, masters);
   exportMonthlySummaryCsv(summary);
   exportPartnerSummaryCsv(summary);
+  const totalExpense = sumAllocationExpenses(masters);
   if (totalExpense > 0) {
     const allocation = allocateExpenseByVehicleDays(
       summary.vehicles,
       totalExpense,
     );
-    exportAllocationCsv(yearMonth, expenseLabel, totalExpense, allocation);
+    exportAllocationCsv(yearMonth, "按分費合計", totalExpense, allocation);
     const shipperProfit = allocateShipperNetProfit(
       summary.shippers,
       totalExpense,
     );
     exportShipperProfitCsv(
       yearMonth,
-      expenseLabel,
+      "按分費合計",
       totalExpense,
       shipperProfit,
     );

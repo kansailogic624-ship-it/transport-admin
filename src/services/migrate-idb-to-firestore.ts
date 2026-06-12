@@ -1,7 +1,8 @@
 /**
  * IndexedDB (Dexie) → Firestore への一回限りの自動移行
  */
-import { collection, getDoc, getDocs, setDoc, doc } from "firebase/firestore";
+import { collection, setDoc, doc } from "firebase/firestore";
+import { tracedGetDoc, tracedGetDocs } from "./firestore-read-trace";
 import { firestore } from "@/lib/firebase";
 import { normalizeRecord } from "@/lib/trip-normalize";
 import { consolidateDailyRecordsByDriverDay } from "@/lib/record-consolidate";
@@ -77,7 +78,10 @@ export async function migrateIndexedDbToFirestoreOnce(
     return { migrated: false, message: "ローカルフラグにより移行済み" };
   }
 
-  const metaSnap = await getDoc(doc(firestore, userMetaPath(uid)));
+  const metaSnap = await tracedGetDoc(
+    doc(firestore, userMetaPath(uid)),
+    `migrate:meta:${userMetaPath(uid)}`,
+  );
   if (metaSnap.data()?.idbMigrated === true) {
     localStorage.setItem(localMigrationFlag(uid), "1");
     return { migrated: false, message: "Firestore メタにより移行済み" };
@@ -97,10 +101,22 @@ export async function migrateIndexedDbToFirestoreOnce(
   }
 
   const [recordsSnap, mastersSnap, billsSnap, expensesSnap] = await Promise.all([
-    getDocs(collection(firestore, userRecordsPath(uid))),
-    getDoc(doc(firestore, userMastersPath(uid))),
-    getDocs(collection(firestore, userMaintenanceBillsPath(uid))),
-    getDocs(collection(firestore, userVehicleExpensesPath(uid))),
+    tracedGetDocs(
+      collection(firestore, userRecordsPath(uid)),
+      `migrate:records:${userRecordsPath(uid)}`,
+    ),
+    tracedGetDoc(
+      doc(firestore, userMastersPath(uid)),
+      `migrate:masters:${userMastersPath(uid)}`,
+    ),
+    tracedGetDocs(
+      collection(firestore, userMaintenanceBillsPath(uid)),
+      `migrate:bills:${userMaintenanceBillsPath(uid)}`,
+    ),
+    tracedGetDocs(
+      collection(firestore, userVehicleExpensesPath(uid)),
+      `migrate:expenses:${userVehicleExpensesPath(uid)}`,
+    ),
   ]);
 
   if (snapshot.records.length > 0 && recordsSnap.size === 0) {

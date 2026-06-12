@@ -47,6 +47,18 @@ export function normalizeTrip(
       typeof trip.dropCount === "number" && trip.dropCount > 0
         ? Math.round(trip.dropCount)
         : undefined,
+    amazonDiff:
+      typeof trip.amazonDiff === "string" && trip.amazonDiff.trim()
+        ? trip.amazonDiff.trim()
+        : undefined,
+    amazonMemo:
+      typeof trip.amazonMemo === "string" && trip.amazonMemo.trim()
+        ? trip.amazonMemo.trim()
+        : undefined,
+    amazonLaborCost:
+      typeof trip.amazonLaborCost === "string" && trip.amazonLaborCost.trim()
+        ? trip.amazonLaborCost.trim()
+        : undefined,
   };
 }
 
@@ -77,7 +89,9 @@ export function normalizeRecord(record: Partial<DailyRecord>): DailyRecord {
         ? record.reportedDistanceKm
         : undefined,
     isFusionDraft: record.isFusionDraft,
-    fusionDispatchOptions: record.fusionDispatchOptions,
+    fusionDispatchOptions: Array.isArray(record.fusionDispatchOptions)
+      ? record.fusionDispatchOptions
+      : undefined,
     primaryLinkedDispatchName: record.primaryLinkedDispatchName,
     rollCallPreRecorded: record.rollCallPreRecorded,
     rollCallPostRecorded: record.rollCallPostRecorded,
@@ -90,6 +104,10 @@ export function normalizeRecord(record: Partial<DailyRecord>): DailyRecord {
     dayStatus:
       record.dayStatus === "公休" || record.dayStatus === "有給"
         ? record.dayStatus
+        : undefined,
+    importHistoryId:
+      typeof record.importHistoryId === "string" && record.importHistoryId.trim()
+        ? record.importHistoryId.trim()
         : undefined,
   };
 }

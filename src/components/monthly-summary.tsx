@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Calculator, Download } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Download } from "lucide-react";
 import { BackupControls } from "@/components/backup-controls";
 import { formatYen } from "@/lib/currency-format";
-import { DriverProductivityView } from "@/components/driver-productivity-view";
+import { DriverDetailView } from "@/components/driver-detail-view";
 import { ShipperExpensePopover } from "@/components/shipper-expense-popover";
-import { ShipperJobDrilldown } from "@/components/shipper-job-drilldown";
+import { ShipperPerformanceView } from "@/components/shipper-performance-view";
 import { VehicleCostDrilldown } from "@/components/vehicle-cost-drilldown";
 import { StackedCostChart } from "@/components/stacked-cost-chart";
-import { SummaryBarChart } from "@/components/summary-chart";
-import { CurrencyInput } from "@/components/ui/currency-input";
+import {
+  MonthlyTrendComboChart,
+  SummaryBarChart,
+} from "@/components/summary-chart";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -31,7 +33,6 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  exportAllocationCsv,
   exportDailyRecordsCsv,
   exportFullMonthlyPack,
   exportMonthlySummaryCsv,
@@ -39,17 +40,19 @@ import {
   exportShipperProfitCsv,
 } from "@/lib/csv";
 import {
-  buildDriverAnalysis,
   buildShipperJobAnalysis,
   buildVehicleCostBreakdown,
   toStackedCostChartData,
 } from "@/lib/dashboard-analytics";
-import { enrichShipperJobMarginalProfit } from "@/lib/shipper-marginal-profit";
+import { sumAllocationExpenses } from "@/lib/allocation-expense-utils";
 import {
-  allocateExpenseByVehicleDays,
+  buildMonthlyFinancialSnapshot,
+  buildMonthlyTrendSnapshots,
+  fuelByVehicleFromAllocation,
+} from "@/lib/monthly-overview-metrics";
+import {
   allocateShipperNetProfit,
   buildMonthlySummary,
-  enrichAllocationWithMaintenance,
   type ShipperProfitRow,
 } from "@/lib/monthly-aggregate";
 import { buildShipperExpenseBreakdown } from "@/lib/shipper-expense-breakdown";
@@ -58,18 +61,17 @@ import {
   aggregateFuelByVehicle,
   aggregateMaintenanceByVehicle,
   aggregateTollByVehicle,
-  totalFuelForMonth,
   totalMaintenanceForMonth,
   totalTollExpenseForMonth,
 } from "@/lib/vehicle-maintenance-cost";
-import { loadVehicleExpenses } from "@/services/firestore-storage";
 import type { DailyRecord, MasterData, VehicleExpenseRecord } from "@/lib/types";
 
-type DashboardView = "vehicle" | "shipper" | "driver";
+type AnalyticsTab = "overview" | "driver" | "shipper" | "vehicle";
 
 type MonthlySummaryProps = {
   records: DailyRecord[];
   masters: MasterData;
+  vehicleExpenses: VehicleExpenseRecord[];
   onRestore: (records: DailyRecord[], masters: MasterData) => void;
   onRecordsChange?: (records: DailyRecord[]) => void;
 };
@@ -82,29 +84,46 @@ function formatPct(ratio: number): string {
 export function MonthlySummary({
   records,
   masters,
+  vehicleExpenses,
   onRestore,
   onRecordsChange,
 }: MonthlySummaryProps) {
   const { selectedYearMonth: yearMonth, setSelectedYearMonth: setYearMonth } =
     useSelectedDate();
-  const [dashboardView, setDashboardView] = useState<DashboardView>("vehicle");
-  const [expenseLabel, setExpenseLabel] = useState("ガソリン代");
-  const [totalExpenseInput, setTotalExpenseInput] = useState("");
-  const [allocationApplied, setAllocationApplied] = useState(false);
-  const [vehicleExpenses, setVehicleExpenses] = useState<VehicleExpenseRecord[]>(
-    [],
-  );
-
-  useEffect(() => {
-    void loadVehicleExpenses().then(setVehicleExpenses);
-  }, [yearMonth]);
+  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsTab>("overview");
 
   const summary = useMemo(
     () => buildMonthlySummary(records, yearMonth, masters),
     [records, yearMonth, masters],
   );
 
-  const totalExpense = Number(totalExpenseInput) || 0;
+  const totalAllocationExpense = useMemo(
+    () => sumAllocationExpenses(masters),
+    [masters],
+  );
+
+  const financialSnapshot = useMemo(
+    () =>
+      buildMonthlyFinancialSnapshot(
+        records,
+        yearMonth,
+        masters,
+        vehicleExpenses,
+      ),
+    [records, yearMonth, masters, vehicleExpenses],
+  );
+
+  const trendSnapshots = useMemo(
+    () =>
+      buildMonthlyTrendSnapshots(
+        records,
+        yearMonth,
+        masters,
+        vehicleExpenses,
+        6,
+      ),
+    [records, yearMonth, masters, vehicleExpenses],
+  );
 
   const maintenanceByVehicle = useMemo(
     () =>
@@ -121,16 +140,10 @@ export function MonthlySummary({
     [vehicleExpenses, yearMonth],
   );
 
-  const allocation = useMemo(() => {
-    if (!allocationApplied || totalExpense <= 0) return null;
-    const base = allocateExpenseByVehicleDays(summary.vehicles, totalExpense);
-    return enrichAllocationWithMaintenance(base, maintenanceByVehicle);
-  }, [allocationApplied, totalExpense, summary.vehicles, maintenanceByVehicle]);
-
   const shipperProfits = useMemo(() => {
-    if (!allocationApplied || totalExpense <= 0) return null;
-    return allocateShipperNetProfit(summary.shippers, totalExpense);
-  }, [allocationApplied, totalExpense, summary.shippers]);
+    if (totalAllocationExpense <= 0) return null;
+    return allocateShipperNetProfit(summary.shippers, totalAllocationExpense);
+  }, [totalAllocationExpense, summary.shippers]);
 
   const vehicleKeys = useMemo(
     () => summary.vehicles.map((v) => v.vehicleNumber),
@@ -147,11 +160,6 @@ export function MonthlySummary({
     [vehicleExpenses, yearMonth, vehicleKeys],
   );
 
-  const monthFuelTotal = useMemo(
-    () => totalFuelForMonth(vehicleExpenses, yearMonth),
-    [vehicleExpenses, yearMonth],
-  );
-
   const monthTollImportTotal = useMemo(
     () => totalTollExpenseForMonth(vehicleExpenses, yearMonth),
     [vehicleExpenses, yearMonth],
@@ -162,26 +170,16 @@ export function MonthlySummary({
     [importedFuelByVehicle],
   );
 
-  const fuelByVehicle = useMemo(() => {
-    if (hasImportedFuel) return importedFuelByVehicle;
-    const map = new Map<string, number>();
-    if (allocation) {
-      for (const row of allocation) {
-        map.set(row.vehicleNumber, row.allocatedExpense);
-      }
-    }
-    return map;
-  }, [hasImportedFuel, importedFuelByVehicle, allocation]);
-
-  const fuelByShipper = useMemo(() => {
-    const map = new Map<string, number>();
-    if (shipperProfits) {
-      for (const row of shipperProfits) {
-        map.set(row.shipperName, row.allocatedExpense);
-      }
-    }
-    return map;
-  }, [shipperProfits]);
+  const fuelByVehicle = useMemo(
+    () =>
+      fuelByVehicleFromAllocation(
+        records,
+        yearMonth,
+        masters,
+        vehicleExpenses,
+      ),
+    [records, yearMonth, masters, vehicleExpenses],
+  );
 
   const maintenanceByShipper = useMemo(() => {
     const map = new Map<string, number>();
@@ -231,51 +229,10 @@ export function MonthlySummary({
     [vehicleCostRows],
   );
 
-  const shipperAnalysis = useMemo(() => {
-    const base = buildShipperJobAnalysis(
-      records,
-      yearMonth,
-      masters,
-      fuelByShipper.size > 0 ? fuelByShipper : undefined,
-    );
-    const commonExpense =
-      allocationApplied && totalExpense > 0 ? totalExpense : 0;
-    return enrichShipperJobMarginalProfit(base, commonExpense);
-  }, [
-    records,
-    yearMonth,
-    masters,
-    fuelByShipper,
-    allocationApplied,
-    totalExpense,
-  ]);
-
-  const driverAnalysis = useMemo(
-    () => buildDriverAnalysis(records, yearMonth, masters),
+  const shipperPerformanceRows = useMemo(
+    () => buildShipperJobAnalysis(records, yearMonth, masters),
     [records, yearMonth, masters],
   );
-
-  const shipperProfitChartData =
-    shipperProfits?.slice(0, 8).map((s) => ({
-      name: s.shipperName,
-      value: s.netGrossProfit,
-    })) ??
-    shipperAnalysis.slice(0, 8).map((s) => ({
-      name: s.shipperName,
-      value: s.grossProfit,
-    }));
-
-  const handleAllocate = () => {
-    if (totalExpense <= 0) {
-      alert("総請求額を入力してください（1円以上）");
-      return;
-    }
-    if (summary.vehicles.length === 0) {
-      alert("この月に車両データがありません。日次入力で運行業務を登録してください。");
-      return;
-    }
-    setAllocationApplied(true);
-  };
 
   return (
     <div className="space-y-6">
@@ -287,15 +244,12 @@ export function MonthlySummary({
 
       <div className="flex flex-wrap items-end gap-4 rounded-lg border bg-card p-4">
         <div className="space-y-2">
-          <Label htmlFor="summary-month">集計対象月</Label>
+          <Label htmlFor="summary-month">対象月</Label>
           <Input
             id="summary-month"
             type="month"
             value={yearMonth}
-            onChange={(e) => {
-              setYearMonth(e.target.value);
-              setAllocationApplied(false);
-            }}
+            onChange={(e) => setYearMonth(e.target.value)}
             className="w-[180px]"
           />
         </div>
@@ -321,15 +275,7 @@ export function MonthlySummary({
           <Button
             type="button"
             size="sm"
-            onClick={() =>
-              exportFullMonthlyPack(
-                records,
-                yearMonth,
-                masters,
-                expenseLabel,
-                allocationApplied ? totalExpense : 0,
-              )
-            }
+            onClick={() => exportFullMonthlyPack(records, yearMonth, masters)}
           >
             <Download className="size-4" />
             一括ダウンロード
@@ -337,77 +283,159 @@ export function MonthlySummary({
         </div>
       </div>
 
-      {/* 分析切り口タブ（車両別 / 荷主別 / ドライバー別） */}
       <Tabs
-        value={dashboardView}
-        onValueChange={(v) => setDashboardView(v as DashboardView)}
+        value={analyticsTab}
+        onValueChange={(v) => setAnalyticsTab(v as AnalyticsTab)}
       >
-        <TabsList className="grid w-full max-w-2xl grid-cols-3">
-          <TabsTrigger value="vehicle">① 車両別（経費内訳）</TabsTrigger>
-          <TabsTrigger value="shipper">② 荷主・業務別</TabsTrigger>
-          <TabsTrigger value="driver">③ ドライバー別</TabsTrigger>
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4">
+          <TabsTrigger value="overview">月次集計（全体）</TabsTrigger>
+          <TabsTrigger value="driver">ドライバー別実績</TabsTrigger>
+          <TabsTrigger value="shipper">荷主別実績</TabsTrigger>
+          <TabsTrigger value="vehicle">車両別実績</TabsTrigger>
         </TabsList>
       </Tabs>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>月間総売上</CardDescription>
-            <CardTitle className="text-2xl">
-              {formatYen(summary.totalRevenue)}
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        {dashboardView === "vehicle" && (
-          <>
-            <Card className="border-orange-200 bg-orange-50/40">
+      {analyticsTab === "overview" && (
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Card>
               <CardHeader className="pb-2">
-                <CardDescription>月間修繕コスト（整備費・部品代）</CardDescription>
-                <CardTitle className="text-2xl text-orange-800">
-                  {formatYen(monthMaintenanceTotal)}
+                <CardDescription>月間総売上</CardDescription>
+                <CardTitle className="text-2xl">
+                  {formatYen(financialSnapshot.totalRevenue)}
                 </CardTitle>
               </CardHeader>
             </Card>
-            {hasImportedFuel && (
-              <Card className="border-amber-200 bg-amber-50/40">
-                <CardHeader className="pb-2">
-                  <CardDescription>月間燃料代（加島様インポート）</CardDescription>
-                  <CardTitle className="text-2xl text-amber-900">
-                    {formatYen(monthFuelTotal)}
-                  </CardTitle>
-                </CardHeader>
-              </Card>
-            )}
+            <Card className="border-sky-200 bg-sky-50/40">
+              <CardHeader className="pb-2">
+                <CardDescription>1日1台あたりの平均売上</CardDescription>
+                <CardTitle className="text-2xl text-sky-900">
+                  {financialSnapshot.totalVehicleDays > 0
+                    ? formatYen(financialSnapshot.avgRevenuePerVehicleDay)
+                    : "—"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card className="border-violet-200 bg-violet-50/40">
+              <CardHeader className="pb-2">
+                <CardDescription>労働分配率（人件費÷粗利益）</CardDescription>
+                <CardTitle className="text-2xl text-violet-900">
+                  {financialSnapshot.laborDistributionRate != null
+                    ? formatPct(financialSnapshot.laborDistributionRate)
+                    : "—"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card
+              className={
+                financialSnapshot.netProfit >= 0
+                  ? "border-emerald-200 bg-emerald-50/40"
+                  : "border-red-200 bg-red-50/40"
+              }
+            >
+              <CardHeader className="pb-2">
+                <CardDescription>純利益（按分費込み）</CardDescription>
+                <CardTitle
+                  className={`text-2xl ${
+                    financialSnapshot.netProfit >= 0
+                      ? "text-emerald-800"
+                      : "text-red-700"
+                  }`}
+                >
+                  {formatYen(financialSnapshot.netProfit)}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>月間総走行</CardDescription>
+                <CardTitle className="text-2xl">
+                  {summary.totalKm.toLocaleString()} km
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>総稼働台数（車両×日）</CardDescription>
+                <CardTitle className="text-2xl">
+                  {financialSnapshot.totalVehicleDays} 台日
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>按分経費合計（マスタ登録）</CardDescription>
+                <CardTitle className="text-2xl">
+                  {formatYen(financialSnapshot.allocationExpense)}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>稼働荷主数</CardDescription>
+                <CardTitle className="text-2xl">
+                  {summary.shippers.length} 社
+                </CardTitle>
+              </CardHeader>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Card className="border-orange-200 bg-orange-50/40">
+              <CardHeader className="pb-2">
+                <CardDescription>月間修繕コスト</CardDescription>
+                <CardTitle className="text-2xl text-orange-800">
+                  {formatYen(financialSnapshot.totalMaintenance)}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card className="border-amber-200 bg-amber-50/40">
+              <CardHeader className="pb-2">
+                <CardDescription>
+                  月間燃料代
+                  {hasImportedFuel ? "（インポート）" : ""}
+                </CardDescription>
+                <CardTitle className="text-2xl text-amber-900">
+                  {formatYen(financialSnapshot.totalFuel)}
+                </CardTitle>
+              </CardHeader>
+            </Card>
             {monthTollImportTotal > 0 && (
               <Card className="border-teal-200 bg-teal-50/40">
                 <CardHeader className="pb-2">
-                  <CardDescription>月間高速代（KJS/コーポインポート）</CardDescription>
+                  <CardDescription>月間高速代（インポート）</CardDescription>
                   <CardTitle className="text-2xl text-teal-900">
                     {formatYen(monthTollImportTotal)}
                   </CardTitle>
                 </CardHeader>
               </Card>
             )}
-          </>
-        )}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>月間総走行</CardDescription>
-            <CardTitle className="text-2xl">
-              {summary.totalKm.toLocaleString()} km
-            </CardTitle>
-          </CardHeader>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>日次記録件数</CardDescription>
-            <CardTitle className="text-2xl">{summary.recordCount} 件</CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>日次記録件数</CardDescription>
+                <CardTitle className="text-2xl">{summary.recordCount} 件</CardTitle>
+              </CardHeader>
+            </Card>
+          </div>
 
-      {/* ── ① 車両別（経費内訳） ── */}
-      {dashboardView === "vehicle" && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">月別推移（売上・総経費・純利益）</CardTitle>
+              <CardDescription>
+                過去6ヶ月の経営推移。総経費にはマスタの按分費・人件費・燃料・修繕等を含みます。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <MonthlyTrendComboChart snapshots={trendSnapshots} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {analyticsTab === "vehicle" && (
         <div className="space-y-6">
           <Card>
             <CardHeader>
@@ -425,7 +453,7 @@ export function MonthlySummary({
               <CardTitle className="text-lg">車両別 コスト明細</CardTitle>
               <CardDescription>
                 修繕費・燃料代・高速代は車両経費管理のインポートから自動連動
-                {hasImportedFuel ? "" : "（燃料代未登録時は月次経費按分を使用）"}
+                {hasImportedFuel ? "" : "（燃料代未登録時はマスタ登録の按分費を車両稼働日数で配分）"}
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
@@ -469,63 +497,22 @@ export function MonthlySummary({
         </div>
       )}
 
-      {/* ── ② 荷主・業務別（ドリルダウン） ── */}
-      {dashboardView === "shipper" && (
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">荷主別 粗利益ランキング</CardTitle>
-              <CardDescription>
-                粗利 ＝ 売上 − 高速代 − 人件費
-                {shipperProfits ? " − 按分燃料代" : ""}（上位8社）
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <SummaryBarChart
-                data={shipperProfitChartData}
-                valueLabel="粗利益"
-                color="hsl(142 71% 45%)"
-              />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">荷主 → 業務 階層分析</CardTitle>
-              <CardDescription>
-                荷主行で業務一覧を展開し、業務行をクリックすると日次明細をその場で修正できます。
-                純利益・1台あたり純利益は高速代・人件費に加え、下部の月次経費を稼働台数で按分して算出します。
-                {allocationApplied && totalExpense > 0
-                  ? `（共通経費 ${formatYen(totalExpense)} を按分済）`
-                  : "（月次経費按分は未適用 — 下部で按分計算を実行すると純利益に反映されます）"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ShipperJobDrilldown
-                rows={shipperAnalysis}
-                yearMonth={yearMonth}
-                records={records}
-                vehicles={masters.vehicles}
-                masters={masters}
-                onRecordsChange={
-                  onRecordsChange ??
-                  (() => {
-                    /* read-only */
-                  })
-                }
-                maintenanceByShipper={maintenanceByShipper}
-                commonExpenseApplied={allocationApplied && totalExpense > 0}
-              />
-            </CardContent>
-          </Card>
-        </div>
+      {analyticsTab === "shipper" && (
+        <ShipperPerformanceView
+          rows={shipperPerformanceRows}
+          yearMonth={yearMonth}
+        />
       )}
 
-      {/* ── ③ ドライバー別（生産性・労務） ── */}
-      {dashboardView === "driver" && (
-        <DriverProductivityView rows={driverAnalysis} />
+      {analyticsTab === "driver" && (
+        <DriverDetailView
+          records={records}
+          onRecordsChange={onRecordsChange}
+          embedded
+        />
       )}
 
-      {summary.partners.length > 0 && (
+      {analyticsTab === "overview" && summary.partners.length > 0 && (
         <Card className="border-blue-600/30">
           <CardHeader>
             <CardTitle className="text-lg">協力会社（傭車先）別集計</CardTitle>
@@ -597,13 +584,13 @@ export function MonthlySummary({
         </Card>
       )}
 
-      {dashboardView === "shipper" && shipperProfits && (
+      {analyticsTab === "overview" && shipperProfits && (
         <Card className="border-emerald-600/30">
           <CardHeader>
             <CardTitle className="text-lg">荷主別「真の粗利益」</CardTitle>
             <CardDescription>
-              差引粗利益 ＝ 総売上 − 総高速代 − 総人件費 − 総傭車料 − 月次経費（{expenseLabel}{" "}
-              {formatYen(totalExpense)} を荷主の売上比率で按分）
+              差引粗利益 ＝ 総売上 − 総高速代 − 総人件費 − 総傭車料 − 按分経費（マスタ登録の合計{" "}
+              {formatYen(totalAllocationExpense)} を荷主の売上比率で按分）
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -738,8 +725,8 @@ export function MonthlySummary({
               onClick={() =>
                 exportShipperProfitCsv(
                   yearMonth,
-                  expenseLabel,
-                  totalExpense,
+                  "按分費合計",
+                  totalAllocationExpense,
                   shipperProfits,
                 )
               }
@@ -749,157 +736,6 @@ export function MonthlySummary({
             </Button>
           </CardContent>
         </Card>
-      )}
-
-      {dashboardView === "vehicle" && (
-      <Card className="border-primary/30">
-        <CardHeader>
-          <CardTitle className="text-lg">月次経費の自動按分</CardTitle>
-          <CardDescription>
-            車両は稼働日数比率で燃料代を按分。純利益 ＝ 売上 − 人件費 − 燃料代 − 高速代 − 修繕費
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label htmlFor="expense-label">経費名目</Label>
-              <Input
-                id="expense-label"
-                value={expenseLabel}
-                onChange={(e) => setExpenseLabel(e.target.value)}
-                placeholder="ガソリン代"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="total-expense">総請求額（円）</Label>
-              <CurrencyInput
-                id="total-expense"
-                value={Number(totalExpenseInput) || 0}
-                onChange={(n) => {
-                  setTotalExpenseInput(String(n));
-                  setAllocationApplied(false);
-                }}
-              />
-            </div>
-            <div className="flex items-end gap-2">
-              <Button type="button" onClick={handleAllocate} className="w-full sm:w-auto">
-                <Calculator className="size-4" />
-                月次経費を按分して計算
-              </Button>
-            </div>
-          </div>
-
-          {allocation && (
-            <>
-              <p className="text-sm text-muted-foreground">
-                {expenseLabel} {formatYen(totalExpense)} を{" "}
-                {summary.vehicles.length} 台の稼働日数比率で按分しました。
-              </p>
-              <div className="overflow-x-auto rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>車両番号</TableHead>
-                      <TableHead className="text-right">稼働日数</TableHead>
-                      <TableHead className="text-right">按分比率</TableHead>
-                      <TableHead className="text-right">売上</TableHead>
-                      <TableHead className="text-right">修繕コスト</TableHead>
-                      <TableHead className="text-right">按分経費</TableHead>
-                      <TableHead className="text-right font-semibold">
-                        純利益
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {allocation.map((row) => {
-                      const maintenance =
-                        maintenanceByVehicle.get(row.vehicleNumber) ?? 0;
-                      return (
-                      <TableRow key={row.vehicleNumber}>
-                        <TableCell className="font-medium">
-                          {row.vehicleNumber}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {row.operatingDays} 日
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {formatPct(row.allocationRatio)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {formatYen(row.totalRevenue)}
-                        </TableCell>
-                        <TableCell className="text-right text-orange-700">
-                          {formatYen(maintenance, { zeroAsDash: true })}
-                        </TableCell>
-                        <TableCell className="text-right text-orange-600">
-                          {formatYen(row.allocatedExpense)}
-                        </TableCell>
-                        <TableCell
-                          className={`text-right font-semibold ${
-                            row.grossProfit >= 0
-                              ? "text-emerald-600"
-                              : "text-red-600"
-                          }`}
-                        >
-                          {formatYen(row.grossProfit)}
-                        </TableCell>
-                      </TableRow>
-                    );})}
-                    <TableRow className="bg-muted/50 font-semibold">
-                      <TableCell>合計</TableCell>
-                      <TableCell className="text-right">
-                        {allocation.reduce((s, r) => s + r.operatingDays, 0)}{" "}
-                        日
-                      </TableCell>
-                      <TableCell />
-                      <TableCell className="text-right">
-                        {formatYen(
-                          allocation.reduce((s, r) => s + r.totalRevenue, 0),
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatYen(monthMaintenanceTotal)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatYen(
-                          allocation.reduce((s, r) => s + r.allocatedExpense, 0),
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatYen(
-                          allocation.reduce((s, r) => s + r.grossProfit, 0),
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  exportAllocationCsv(
-                    yearMonth,
-                    expenseLabel,
-                    totalExpense,
-                    allocation,
-                  )
-                }
-              >
-                <Download className="size-4" />
-                按分結果CSV
-              </Button>
-            </>
-          )}
-
-          {!allocationApplied && totalExpense > 0 && (
-            <p className="text-sm text-muted-foreground">
-              総請求額を入力したら「月次経費を按分して計算」を押してください。
-            </p>
-          )}
-        </CardContent>
-      </Card>
       )}
 
     </div>

@@ -145,7 +145,7 @@ export function TripFusionEditor({
           FM配車
         </Label>
         <Select
-          value={selected}
+          value={selected ?? ""}
           onValueChange={(v) => {
             if (!v) return;
             const opt = options.find((o) => o.dispatchName === v);

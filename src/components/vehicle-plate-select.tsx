@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import {
   Select,
   SelectContent,
@@ -7,18 +8,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import {
-  normalizeVehicleNumber,
+  buildVehicleIndexKeys,
+  extractPureVehicleDigits,
+  pureVehicleDigitsMatch,
   resolveVehicleMasterLabel,
+  vehicleIndexKeysOverlap,
   vehiclesMatch,
 } from "@/lib/import-match-keys";
+import {
+  coerceToVehicleLabel,
+  filterVehicleSelectOptions,
+  findVehicleInOptions,
+  hyphenCodeCandidates,
+  normalizeVehicleSelectInput,
+  sortVehicleSelectOptions,
+  toVehicleLabelList,
+} from "@/lib/vehicle-select-options";
 import { cn } from "@/lib/utils";
 
 const UNSELECTED = "__UNSELECTED__";
 
 type VehiclePlateSelectProps = {
   value: string;
-  vehicles: string[];
+  /** string[] / VehicleDetail[] / VehicleSelectOption[] を許容 */
+  vehicles: unknown;
   /** OCRで読み取ったがマスタにない車番（参考表示用） */
   ocrHint?: string;
   onChange: (plate: string) => void;
@@ -27,7 +42,7 @@ type VehiclePlateSelectProps = {
 
 /**
  * 社内車両マスタから車両ナンバーを選択するドロップダウン。
- * マスタにない・不正な値は「未選択（要確認）」にフォールバック。
+ * 1台1選択肢（正式登録番号表示）。下4桁・社内コードでの検索フィルタ対応。
  */
 export function VehiclePlateSelect({
   value,
@@ -36,17 +51,31 @@ export function VehiclePlateSelect({
   onChange,
   className,
 }: VehiclePlateSelectProps) {
-  const cleaned = (value ?? "")
-    .replace(/undefined/gi, "")
-    .trim();
-  const inMaster = cleaned && vehicles.includes(cleaned);
-  const selectValue = inMaster ? cleaned : UNSELECTED;
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const options = useMemo(
+    () => normalizeVehicleSelectInput(vehicles),
+    [vehicles],
+  );
+
+  const filteredOptions = useMemo(
+    () =>
+      sortVehicleSelectOptions(
+        filterVehicleSelectOptions(options, searchQuery),
+      ),
+    [options, searchQuery],
+  );
+
+  const cleaned = coerceToVehicleLabel(value);
+  const matchedOption = findVehicleInOptions(cleaned, options);
+  const inMaster = Boolean(matchedOption);
+  const selectValue = matchedOption || UNSELECTED;
 
   const hint =
-    ocrHint?.replace(/undefined/gi, "").trim() ||
+    coerceToVehicleLabel(ocrHint) ||
     (!inMaster && cleaned ? cleaned : "");
 
-  if (vehicles.length === 0) {
+  if (options.length === 0) {
     return (
       <p className="text-[11px] text-amber-700">
         車両マスタ未登録。マスタ登録から車両を追加してください。
@@ -56,13 +85,28 @@ export function VehiclePlateSelect({
 
   return (
     <Select
-      value={selectValue}
-      onValueChange={(v) => onChange(v === UNSELECTED ? "" : (v ?? ""))}
+      value={selectValue ?? ""}
+      onValueChange={(v) => {
+        setSearchQuery("");
+        onChange(v === UNSELECTED ? "" : coerceToVehicleLabel(v));
+      }}
     >
       <SelectTrigger className={cn("h-7 w-full font-mono text-xs", className)}>
         <SelectValue placeholder="未選択（要確認）" />
       </SelectTrigger>
       <SelectContent>
+        <div
+          className="sticky top-0 z-10 border-b bg-popover p-1.5"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Input
+            className="h-7 font-mono text-xs"
+            placeholder="車番で検索（60-30 / 6030）"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+        </div>
         <SelectItem value={UNSELECTED}>
           <span className="text-amber-700">未選択（要確認）</span>
         </SelectItem>
@@ -71,9 +115,14 @@ export function VehiclePlateSelect({
             OCR認識: {hint}（マスタ未登録）
           </SelectItem>
         )}
-        {vehicles.map((plate) => (
-          <SelectItem key={plate} value={plate}>
-            {plate}
+        {filteredOptions.length === 0 && searchQuery.trim() && (
+          <div className="px-2 py-2 text-xs text-muted-foreground">
+            「{searchQuery}」に一致する車両がありません
+          </div>
+        )}
+        {filteredOptions.map((opt) => (
+          <SelectItem key={opt.vehicleId ?? opt.value} value={opt.value}>
+            {opt.label}
           </SelectItem>
         ))}
       </SelectContent>
@@ -84,47 +133,64 @@ export function VehiclePlateSelect({
 /** OCR結果の車番をマスタ照合して正規化（燃料代カードNo. / KJS下4桁 / コーポ全番号対応） */
 export function normalizeVehicleForMaster(
   raw: string,
-  vehicles: string[],
+  vehicles: unknown,
 ): { vehicleNumber: string; ocrHint: string } {
-  const cleaned = (raw ?? "")
-    .replace(/undefined/gi, "")
-    .trim();
+  const labels = toVehicleLabelList(vehicles);
+  const cleaned = coerceToVehicleLabel(raw);
   if (!cleaned) return { vehicleNumber: "", ocrHint: "" };
 
-  const resolved = resolveVehicleMasterLabel(cleaned, vehicles, "");
-  if (resolved) return { vehicleNumber: resolved, ocrHint: "" };
+  const direct = findVehicleInOptions(cleaned, vehicles);
+  if (direct) return { vehicleNumber: direct, ocrHint: "" };
 
-  const key = normalizeVehicleNumber(cleaned);
-  for (const v of vehicles) {
-    if (vehiclesMatch(v, cleaned)) return { vehicleNumber: v, ocrHint: "" };
-    const vk = normalizeVehicleNumber(v);
-    if (vk.length >= 4 && (key.includes(vk) || vk.includes(key))) {
-      return { vehicleNumber: v, ocrHint: "" };
+  const digits = cleaned.replace(/\D/g, "");
+  const candidates = [
+    cleaned,
+    ...buildVehicleIndexKeys(cleaned),
+    ...hyphenCodeCandidates(digits),
+    ...(digits ? [digits] : []),
+  ];
+  for (const cand of [...new Set(candidates)]) {
+    const hit = findVehicleInOptions(cand, vehicles);
+    if (hit) return { vehicleNumber: hit, ocrHint: "" };
+  }
+
+  const pureQuery = extractPureVehicleDigits(cleaned);
+  if (pureQuery) {
+    const exactPure = labels.filter(
+      (v) => extractPureVehicleDigits(v) === pureQuery,
+    );
+    if (exactPure.length === 1) {
+      return { vehicleNumber: exactPure[0]!, ocrHint: "" };
+    }
+    const loosePure = labels.filter((v) => pureVehicleDigitsMatch(v, cleaned));
+    if (loosePure.length === 1) {
+      return { vehicleNumber: loosePure[0]!, ocrHint: "" };
     }
   }
 
-  const digits = cleaned.replace(/\D/g, "");
-  if (digits.length >= 4) {
-    const last4 = digits.slice(-4);
-    const suffixMatches = vehicles.filter((v) => {
-      const vd = v.replace(/\D/g, "");
-      return vd.endsWith(last4);
-    });
-    if (suffixMatches.length === 1) {
-      return { vehicleNumber: suffixMatches[0]!, ocrHint: "" };
-    }
-    if (suffixMatches.length > 1) {
-      const tail = cleaned.match(/(\d{2,4}[-－]\d{2})/);
-      if (tail) {
-        const narrowed = suffixMatches.filter((v) =>
-          v.includes(tail[1]!.replace(/[-－]/g, "")),
-        );
-        if (narrowed.length === 1) {
-          return { vehicleNumber: narrowed[0]!, ocrHint: "" };
-        }
-      }
-    }
+  const indexMatches = labels.filter((v) =>
+    vehicleIndexKeysOverlap(v, cleaned),
+  );
+  if (indexMatches.length === 1) {
+    return { vehicleNumber: indexMatches[0]!, ocrHint: "" };
+  }
+
+  const resolved = resolveVehicleMasterLabel(cleaned, labels, "");
+  if (resolved && labels.some((v) => vehiclesMatch(v, resolved))) {
+    return { vehicleNumber: resolved, ocrHint: "" };
   }
 
   return { vehicleNumber: "", ocrHint: cleaned };
+}
+
+/** 請求書全文の登録番号ヒントから車両マスタを照合 */
+export function matchVehicleFromRegistrationHints(
+  hints: string[],
+  vehicles: unknown,
+): string {
+  for (const hint of hints) {
+    const { vehicleNumber } = normalizeVehicleForMaster(hint, vehicles);
+    if (vehicleNumber) return vehicleNumber;
+  }
+  return "";
 }

@@ -15,7 +15,6 @@ import {
   downloadBackupJson,
   parseBackupFile,
 } from "@/lib/backup";
-import { getStorageInfo } from "@/services/firestore-storage";
 import type { DailyRecord, MasterData } from "@/lib/types";
 
 type BackupControlsProps = {
@@ -36,15 +35,11 @@ export function BackupControls({
   const [restoring, setRestoring] = useState(false);
   const [storageLabel, setStorageLabel] = useState<string>("");
 
-  // ストレージ使用状況を取得
+  // 既に AppShell が保持している件数を表示（Firestore 再読込しない）
   useEffect(() => {
-    getStorageInfo()
-      .then((info) => {
-        setStorageLabel(
-          `${info.recordCount.toLocaleString()} 件 / ${info.estimatedLabel}`,
-        );
-      })
-      .catch(() => {});
+    setStorageLabel(
+      `${records.length.toLocaleString()} 件 / Firestore（クラウド）`,
+    );
   }, [records.length]);
 
   const handleExport = () => {

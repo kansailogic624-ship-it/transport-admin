@@ -1,4 +1,4 @@
-import { saveMasters, saveRecords } from "@/services/firestore-storage";
+import { saveMasters, saveRecords } from "@/lib/db";
 import { normalizeRecord } from "./trip-normalize";
 import type { DailyRecord, MasterData, SystemBackup } from "./types";
 import { DEFAULT_MASTERS } from "./types";
@@ -88,6 +88,8 @@ export function parseBackupFile(raw: string): SystemBackup {
       data.masters.defaultDispatchDaily ??
       DEFAULT_MASTERS.defaultDispatchDaily,
     mappingRules: data.masters.mappingRules ?? DEFAULT_MASTERS.mappingRules,
+    allocationExpenses:
+      data.masters.allocationExpenses ?? DEFAULT_MASTERS.allocationExpenses,
   };
 
   return {

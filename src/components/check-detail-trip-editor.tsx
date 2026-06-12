@@ -187,7 +187,7 @@ function CompactTripRow({
         </span>
         <div className="grid min-w-0 flex-1 grid-cols-[2fr_3fr] gap-1.5">
           <Select
-            value={row.shipperName}
+            value={row.shipperName ?? ""}
             onValueChange={(v) => {
               const shipper = v ?? "";
               const shipperJobs = getJobsForShipper(masters, shipper);
@@ -212,7 +212,7 @@ function CompactTripRow({
 
           {jobs.length > 0 ? (
             <Select
-              value={row.jobPreset || undefined}
+              value={row.jobPreset ?? ""}
               onValueChange={(v) =>
                 onUpdate({
                   jobPreset: v ?? "",

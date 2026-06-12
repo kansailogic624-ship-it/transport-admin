@@ -96,7 +96,7 @@ export function TripCrewEditor({
           <div className="space-y-1">
             <Label className="text-xs">区分</Label>
             <Select
-              value={member.memberType}
+              value={member.memberType ?? ""}
               onValueChange={(v) => {
                 const type = (v ?? "employee") as CrewMemberType;
                 updateMember(member.id, {
@@ -123,7 +123,7 @@ export function TripCrewEditor({
             <Label className="text-xs">氏名</Label>
             {member.memberType === "employee" ? (
               <Select
-                value={member.name}
+                value={member.name ?? ""}
                 onValueChange={(v) =>
                   updateMember(member.id, { name: v ?? "" })
                 }

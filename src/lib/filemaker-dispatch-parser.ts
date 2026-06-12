@@ -29,11 +29,17 @@ export type ParsedFileMakerDispatch = {
   /** 勤怠・休日行（売上ではなく dayStatus として融合取込） */
   isAttendanceRow?: boolean;
   dayStatus?: DayStatus;
+  /** 日時売上【スケジュール】::備考【個人】 */
+  personalRemarks?: string;
+  /** 備考の (ﾊﾞ) 表記から抽出した助手の苗字 */
+  assistantFromRemarks?: string;
+  /** 車両なし行との合体で判明した助手（運転手名） */
+  assistantDriverName?: string;
   warnings: string[];
 };
 
 /** FileMaker 配車表 CSV（20260530.csv 形式）の列 */
-const SCHEDULE_COL = {
+const SCHEDULE_COL_BASE = {
   revenue: 0,
   shipper: 1,
   dispatch: 2,
@@ -41,6 +47,8 @@ const SCHEDULE_COL = {
   driver: 4,
   date: 5,
 } as const;
+
+const SCHEDULE_COL = SCHEDULE_COL_BASE;
 
 const HEADER_MAP: Record<string, string[]> = {
   date: [
@@ -103,7 +111,27 @@ const HEADER_MAP: Record<string, string[]> = {
     "::退勤",
     "退勤",
   ],
+  remarks: [
+    "備考【個人】",
+    "備考（個人）",
+    "スケジュール】::備考【個人】",
+    "日時売上【スケジュール】::備考【個人】",
+    "::備考【個人】",
+    "備考",
+  ],
 };
+
+type ScheduleColMap = typeof SCHEDULE_COL_BASE & { remarks: number };
+
+function resolveScheduleColumns(headerRow: unknown[] | null): ScheduleColMap {
+  const base = { ...SCHEDULE_COL_BASE, remarks: -1 };
+  if (!headerRow) return base;
+  const remarksIdx = columnIndex(headerRow, HEADER_MAP["remarks"] ?? []);
+  if (remarksIdx != null && remarksIdx >= 0) {
+    return { ...base, remarks: remarksIdx };
+  }
+  return base;
+}
 
 function cellText(value: unknown): string {
   if (value == null) return "";
@@ -240,23 +268,26 @@ function parseScheduleMatrixRows(
   defaultDate = "",
 ): ParsedFileMakerDispatch[] {
   const results: ParsedFileMakerDispatch[] = [];
+  const cols = resolveScheduleColumns(null);
 
   for (let i = startRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
     if (!isDataRowNotHeader(row)) continue;
 
-    const shipperName = cellText(row[SCHEDULE_COL.shipper]);
-    const dispatchRaw = cellText(row[SCHEDULE_COL.dispatch]);
-    const vehicleNumber = cellText(row[SCHEDULE_COL.vehicle]);
-    const driverRaw = cellText(row[SCHEDULE_COL.driver]);
-    const revenue = parseRevenueCell(row[SCHEDULE_COL.revenue]);
+    const shipperName = cellText(row[cols.shipper]);
+    const dispatchRaw = cellText(row[cols.dispatch]);
+    const vehicleNumber = cellText(row[cols.vehicle]);
+    const driverRaw = cellText(row[cols.driver]);
+    const revenue = parseRevenueCell(row[cols.revenue]);
+    const personalRemarks =
+      cols.remarks >= 0 ? cellText(row[cols.remarks]) : "";
 
     if (shouldSkipScheduleRow(dispatchRaw, shipperName)) continue;
 
     const attendance = attendanceFields(shipperName, dispatchRaw);
     const date =
-      parseIsoDateFromCell(row[SCHEDULE_COL.date]) || defaultDate || "";
+      parseIsoDateFromCell(row[cols.date]) || defaultDate || "";
     const driverName = normalizeDriverName(driverRaw);
     const dispatchName = normalizeDispatchName(dispatchRaw);
 
@@ -275,6 +306,7 @@ function parseScheduleMatrixRows(
       shipperName,
       revenue: attendance.isAttendanceRow ? "" : revenue,
       tollFee: "",
+      personalRemarks: personalRemarks || undefined,
       ...attendance,
       warnings,
     });
@@ -300,6 +332,7 @@ function parseHeaderTableRows(
     toll: columnIndex(headerRow, HEADER_MAP["toll"] ?? []),
     timecardIn: columnIndex(headerRow, HEADER_MAP["timecardIn"] ?? []),
     timecardOut: columnIndex(headerRow, HEADER_MAP["timecardOut"] ?? []),
+    remarks: columnIndex(headerRow, HEADER_MAP["remarks"] ?? []),
   };
 
   const results: ParsedFileMakerDispatch[] = [];
@@ -335,6 +368,8 @@ function parseHeaderTableRows(
         : parseRevenueCell(row[5]);
     const tollFee =
       col.toll != null ? parseRevenueCell(row[col.toll]) : "";
+    const personalRemarks =
+      col.remarks != null ? cellText(row[col.remarks]) : "";
 
     const parsedDate = parseIsoDateFromCell(rawDate);
     const parsedDriver = normalizeDriverName(rawDriverCell);
@@ -408,6 +443,7 @@ function parseHeaderTableRows(
       shipperName,
       revenue: attendance.isAttendanceRow ? "" : revenue,
       tollFee,
+      personalRemarks: personalRemarks || undefined,
       timecardIn: timecardInCarry,
       timecardOut: timecardOutCarry,
       ...attendance,

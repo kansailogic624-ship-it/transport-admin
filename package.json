@@ -13,7 +13,16 @@
     "test:fusion": "tsx scripts/test-fusion-import.ts",
     "test:multi-driver": "tsx scripts/test-multi-driver-report.ts",
     "test:day-revenue": "tsx scripts/test-day-revenue.ts",
-    "test:check-missing": "tsx scripts/test-check-missing-match.ts"
+    "test:check-missing": "tsx scripts/test-check-missing-match.ts",
+    "test:employee-master": "tsx scripts/test-employee-master-parser.ts",
+    "import:employees": "tsx scripts/import-employee-master.ts",
+    "test:vehicle-master": "tsx scripts/test-vehicle-master-parser.ts",
+    "import:vehicles": "tsx scripts/import-vehicle-master.ts",
+    "test:job-master": "tsx scripts/test-job-master-parser.ts",
+    "import:jobs": "tsx scripts/import-job-master.ts",
+    "test:job-price": "tsx scripts/test-job-price-history.ts",
+    "test:fm-dispatch-merge": "tsx scripts/test-fm-dispatch-merge.ts",
+    "test:employee-name-resolve": "tsx scripts/test-employee-name-resolve.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

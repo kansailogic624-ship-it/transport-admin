@@ -9,7 +9,7 @@
  * - 元号→西暦の自動変換
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   Plus,
@@ -20,6 +20,7 @@ import {
   FileUp,
   Car,
   AlertCircle,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,27 +39,64 @@ import {
 } from "@/components/vehicle-expense-import-forms";
 import {
   loadMaintenanceBills,
-  loadMasters,
+  loadVehicleDetails,
   deleteMaintenanceBill,
+  getMaintenanceBillById,
   loadVehicleExpensesByBillId,
+  updateBillWithExpenses,
   upsertBillWithExpenses,
 } from "@/services/firestore-storage";
+import { extractInvoiceWithAi } from "@/lib/invoice-ocr-client";
+import {
+  buildEditedSnapshot,
+  buildOcrOriginalSnapshot,
+} from "@/lib/invoice-bill-snapshot";
+import { extractInvoiceMeta } from "@/lib/invoice-ocr-normalize";
 import {
   parseBillText,
   buildMaintenanceBill,
   buildVehicleExpenseRecords,
-  parseVehicleTable,
   computeBillTotalsFromVehicles,
+  computeVehicleRowTotal,
   parseJapaneseDate,
   parseJapaneseBillingMonth,
   parseAmount,
+  extractRegistrationHintsFromText,
   formatBillingMonth,
   formatJapaneseDate,
+  suggestRowConsumptionTax,
+  splitInclusiveAmounts,
+  TAX_CATEGORY_OPTIONS,
+  MAINTENANCE_TYPE_OPTIONS,
   type ParsedVehicleEntry,
+  type VehicleRowTaxCategory,
 } from "@/lib/maintenance-bill-parser";
+import {
+  ensureParsedVehicleEntries,
+  parseMaintenanceBillOcr,
+} from "@/lib/maintenance-bill-ocr-summary";
+import { isValidInvoiceVehicleNumber } from "@/lib/maintenance-bill-parser";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { matchVehicleFromRegistrationHints } from "@/components/vehicle-plate-select";
+import {
+  buildActiveVehicleSelectOptions,
+  type VehicleSelectOption,
+} from "@/lib/vehicle-select-options";
 import { extractTextFromPdf, type OcrProgress } from "@/lib/pdf-extract";
 import { isKashimaBillText } from "@/lib/fuel-bill-parser";
-import type { BillType, VehicleExpenseRecord, VehicleMaintenanceBill } from "@/lib/types";
+import type {
+  BillType,
+  InvoiceOcrSnapshot,
+  MaintenanceType,
+  VehicleExpenseRecord,
+  VehicleMaintenanceBill,
+} from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // 定数
@@ -112,6 +150,8 @@ type EditableVehicleRow = ParsedVehicleEntry & {
   id: string;
   /** OCRで読み取ったがマスタ未登録の車番 */
   ocrHint?: string;
+  /** 消費税を手動上書きした場合 true */
+  taxAmountManual?: boolean;
 };
 
 function emptyVehicleRow(): EditableVehicleRow {
@@ -123,22 +163,122 @@ function emptyVehicleRow(): EditableVehicleRow {
     laborFee: 0,
     partsFee: 0,
     commonExpense: 0,
+    consumptionTax: 0,
+    maintenanceType: "その他",
     totalAmount: 0,
+    taxCategory: "ex_tax",
+  };
+}
+
+function applyRowAmounts(
+  row: EditableVehicleRow,
+  patch: Partial<EditableVehicleRow>,
+): EditableVehicleRow {
+  let taxCategory = (patch.taxCategory ?? row.taxCategory ?? "ex_tax") as VehicleRowTaxCategory;
+  let laborFee = safeNumber(patch.laborFee ?? row.laborFee);
+  let partsFee = safeNumber(patch.partsFee ?? row.partsFee);
+  let commonExpense = safeNumber(patch.commonExpense ?? row.commonExpense);
+
+  const amountFieldsChanged =
+    patch.laborFee !== undefined ||
+    patch.partsFee !== undefined ||
+    patch.commonExpense !== undefined ||
+    patch.taxCategory !== undefined;
+  const userEditedTax = patch.consumptionTax !== undefined;
+
+  let taxAmountManual = userEditedTax
+    ? true
+    : amountFieldsChanged
+      ? false
+      : row.taxAmountManual ?? false;
+
+  let consumptionTax: number;
+
+  if (taxCategory === "incl_tax" && amountFieldsChanged && !userEditedTax) {
+    const split = splitInclusiveAmounts(laborFee, partsFee, commonExpense);
+    laborFee = split.laborFee;
+    partsFee = split.partsFee;
+    commonExpense = split.commonExpense;
+    consumptionTax = split.consumptionTax;
+    taxCategory = "ex_tax";
+    taxAmountManual = false;
+  } else if (userEditedTax) {
+    consumptionTax = safeNumber(patch.consumptionTax);
+  } else if (taxAmountManual && !amountFieldsChanged) {
+    consumptionTax = safeNumber(row.consumptionTax);
+  } else {
+    consumptionTax = suggestRowConsumptionTax(
+      laborFee,
+      partsFee,
+      commonExpense,
+      taxCategory,
+    );
+  }
+
+  const totalAmount = laborFee + partsFee + commonExpense + consumptionTax;
+
+  return {
+    ...row,
+    ...patch,
+    laborFee,
+    partsFee,
+    commonExpense,
+    taxCategory,
+    consumptionTax,
+    taxAmountManual,
+    maintenanceType: (patch.maintenanceType ??
+      row.maintenanceType ??
+      "その他") as MaintenanceType,
+    totalAmount,
   };
 }
 
 function sanitizeEditableRow(
   e: ParsedVehicleEntry,
-  vehicles: string[],
+  vehicles: unknown,
+  registrationHints: string[] = [],
 ): EditableVehicleRow {
-  const { vehicleNumber, ocrHint } = normalizeVehicleForMaster(
-    e.vehicleNumber,
-    vehicles,
+  const safeVehicleNumber = e.vehicleNumber ?? "";
+  let { vehicleNumber, ocrHint } = normalizeVehicleForMaster(
+    safeVehicleNumber,
+    vehicles ?? [],
   );
+  const hints = (registrationHints ?? []).filter(isValidInvoiceVehicleNumber);
+  const rowLooksLikeVehicle = isValidInvoiceVehicleNumber(safeVehicleNumber);
+
+  if (!vehicleNumber && hints.length === 1 && rowLooksLikeVehicle) {
+    const fromHints = matchVehicleFromRegistrationHints(hints, vehicles ?? []);
+    if (fromHints) {
+      vehicleNumber = fromHints;
+      ocrHint = "";
+    }
+  } else if (!vehicleNumber && hints.length === 1 && !rowLooksLikeVehicle) {
+    const rowDigits = safeVehicleNumber.replace(/\D/g, "");
+    const hintDigits = hints[0]!.replace(/\D/g, "");
+    if (rowDigits && hintDigits && rowDigits === hintDigits) {
+      const fromHints = matchVehicleFromRegistrationHints(hints, vehicles ?? []);
+      if (fromHints) {
+        vehicleNumber = fromHints;
+        ocrHint = "";
+      }
+    }
+  }
   const labor = safeNumber(e.laborFee);
   const parts = safeNumber(e.partsFee);
   const common = safeNumber(e.commonExpense);
-  const total = safeNumber(e.totalAmount) || labor + parts + common;
+  const taxCategory = e.taxCategory ?? "ex_tax";
+  const suggestedTax = suggestRowConsumptionTax(labor, parts, common, taxCategory);
+  const consumptionTax =
+    e.consumptionTax !== undefined && e.consumptionTax !== null
+      ? safeNumber(e.consumptionTax)
+      : suggestedTax;
+  const total = computeVehicleRowTotal({
+    laborFee: labor,
+    partsFee: parts,
+    commonExpense: common,
+    consumptionTax,
+    taxCategory,
+  });
   return {
     id: crypto.randomUUID(),
     vehicleNumber,
@@ -147,23 +287,55 @@ function sanitizeEditableRow(
     laborFee: labor,
     partsFee: parts,
     commonExpense: common,
+    consumptionTax,
+    maintenanceType: e.maintenanceType ?? "その他",
     totalAmount: total,
+    taxCategory,
+    taxAmountManual:
+      e.consumptionTax !== undefined &&
+      e.consumptionTax !== null &&
+      safeNumber(e.consumptionTax) !== suggestedTax,
   };
 }
 
 function rowLineTotal(r: EditableVehicleRow): number {
-  const labor = safeNumber(r.laborFee);
-  const parts = safeNumber(r.partsFee);
-  const common = safeNumber(r.commonExpense);
-  const total = safeNumber(r.totalAmount);
-  return total > 0 ? total : labor + parts + common;
+  return computeVehicleRowTotal(r);
 }
+
+function expenseToEditableRow(exp: VehicleExpenseRecord): EditableVehicleRow {
+  return applyRowAmounts(
+    {
+      id: crypto.randomUUID(),
+      vehicleNumber: exp.vehicleNumber ?? "",
+      ocrHint: "",
+      workDescription: exp.workDescription ?? "",
+      laborFee: safeNumber(exp.laborFee),
+      partsFee: safeNumber(exp.partsFee),
+      commonExpense: safeNumber(exp.commonExpense),
+      consumptionTax: safeNumber(exp.consumptionTax),
+      maintenanceType: exp.maintenanceType ?? "その他",
+      totalAmount: safeNumber(exp.totalAmount),
+      taxCategory: "ex_tax",
+    },
+    {},
+  );
+}
+
+const PARSE_FAIL_MESSAGE =
+  "解析結果が取得できませんでした。\n手入力または編集画面から登録してください。";
 
 // ---------------------------------------------------------------------------
 // メインコンポーネント
 // ---------------------------------------------------------------------------
 
-export function MaintenanceBillView() {
+type MaintenanceBillViewProps = {
+  /** 車両経費保存後に AppShell の共有 state を更新する */
+  onVehicleExpensesChange?: () => void | Promise<void>;
+};
+
+export function MaintenanceBillView({
+  onVehicleExpensesChange,
+}: MaintenanceBillViewProps = {}) {
   const [bills, setBills] = useState<VehicleMaintenanceBill[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [pasteText, setPasteText] = useState("");
@@ -183,22 +355,84 @@ export function MaintenanceBillView() {
   const [showTextFallback, setShowTextFallback] = useState(false);
   /** 車両別内訳（編集可能） */
   const [vehiclePreview, setVehiclePreview] = useState<EditableVehicleRow[]>([]);
-  const [vehicleList, setVehicleList] = useState<string[]>([]);
+  const [vehicleList, setVehicleList] = useState<VehicleSelectOption[]>([]);
   const [importMode, setImportMode] = useState<ImportMode>("maintenance");
   const [fuelPrefill, setFuelPrefill] = useState<{
     text: string;
     fileName?: string;
   } | null>(null);
+  const [taxInferred, setTaxInferred] = useState(false);
+  const [editingBillId, setEditingBillId] = useState<string | null>(null);
+  const [editingCreatedAt, setEditingCreatedAt] = useState<string | null>(null);
+  const [ocrOriginalSnapshot, setOcrOriginalSnapshot] =
+    useState<InvoiceOcrSnapshot | null>(null);
+  const [lastParsedText, setLastParsedText] = useState("");
+  const [aiParsing, setAiParsing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** ユーザーが選択したインポートモード（ファイル読込で勝手に切り替えない） */
+  const importModeRef = useRef<ImportMode>("maintenance");
+
+  useEffect(() => {
+    importModeRef.current = importMode;
+  }, [importMode]);
+
+  /** 新規ファイル読込前に OCR 関連ステートを完全初期化 */
+  const resetOcrSession = useCallback((opts?: { clearPasteText?: boolean }) => {
+    setVehiclePreview([]);
+    setParseResult(null);
+    setOcrProgress(null);
+    setShowTextFallback(false);
+    setPdfFileName(null);
+    setFuelPrefill(null);
+    setTaxInferred(false);
+    setForm(EMPTY_FORM);
+    setSourceFileName("");
+    setPdfLoading(false);
+    setEditingBillId(null);
+    setEditingCreatedAt(null);
+    setOcrOriginalSnapshot(null);
+    setLastParsedText("");
+    setAiParsing(false);
+    if (opts?.clearPasteText) {
+      setPasteText("");
+    }
+  }, []);
+
+  const handleImportModeChange = useCallback(
+    (mode: ImportMode) => {
+      importModeRef.current = mode;
+      setImportMode(mode);
+      resetOcrSession({ clearPasteText: true });
+    },
+    [resetOcrSession],
+  );
+
+  const exTaxTotal = useMemo(
+    () =>
+      safeNumber(form.maintenanceSubtotalExTax) +
+      safeNumber(form.expensesSubtotal),
+    [form.maintenanceSubtotalExTax, form.expensesSubtotal],
+  );
+  const taxTotal = safeNumber(form.taxAmount);
+  const inclTaxTotal = exTaxTotal + taxTotal;
 
   const load = useCallback(async () => {
     const data = await loadMaintenanceBills();
     setBills(data);
   }, []);
 
+  const notifyVehicleExpensesChange = useCallback(async () => {
+    await onVehicleExpensesChange?.();
+  }, [onVehicleExpensesChange]);
+
   useEffect(() => {
     void load();
-    void loadMasters().then((m) => setVehicleList(m.vehicles ?? []));
+    void loadVehicleDetails()
+      .then((details) => setVehicleList(buildActiveVehicleSelectOptions(details)))
+      .catch((err) => {
+        console.error("[MaintenanceBill] 車両マスタ読込失敗", err);
+        setVehicleList([]);
+      });
   }, [load]);
 
   /** 車両行の合計をフォーム上部にリアルタイム反映 */
@@ -206,40 +440,25 @@ export function MaintenanceBillView() {
     const filled = rows.filter((r) => r.vehicleNumber.trim() || rowLineTotal(r) > 0);
     if (filled.length === 0) return;
     const totals = computeBillTotalsFromVehicles(filled);
+    const exTax =
+      safeNumber(totals.maintenanceSubtotalExTax) +
+      safeNumber(totals.expensesSubtotal);
+    const tax = safeNumber(totals.taxAmount);
     setForm((f) => ({
       ...f,
       maintenanceSubtotalExTax: String(safeNumber(totals.maintenanceSubtotalExTax)),
       expensesSubtotal: String(safeNumber(totals.expensesSubtotal)),
-      taxAmount: String(safeNumber(totals.taxAmount)),
-      totalAmount: String(safeNumber(totals.totalAmount)),
+      taxAmount: String(tax),
+      totalAmount: String(exTax + tax),
     }));
   }, []);
 
   const updateVehicleRow = useCallback(
     (id: string, patch: Partial<EditableVehicleRow>) => {
       setVehiclePreview((prev) => {
-        const next = prev.map((r) => {
-          if (r.id !== id) return r;
-          const updated = {
-            ...r,
-            ...patch,
-            laborFee: safeNumber(patch.laborFee ?? r.laborFee),
-            partsFee: safeNumber(patch.partsFee ?? r.partsFee),
-            commonExpense: safeNumber(patch.commonExpense ?? r.commonExpense),
-            totalAmount: safeNumber(patch.totalAmount ?? r.totalAmount),
-          };
-          if (
-            patch.laborFee !== undefined ||
-            patch.partsFee !== undefined ||
-            patch.commonExpense !== undefined
-          ) {
-            if (patch.totalAmount === undefined) {
-              updated.totalAmount =
-                updated.laborFee + updated.partsFee + updated.commonExpense;
-            }
-          }
-          return updated;
-        });
+        const next = prev.map((r) =>
+          r.id === id ? applyRowAmounts(r, patch) : r,
+        );
         syncFormFromVehicles(next);
         return next;
       });
@@ -266,15 +485,65 @@ export function MaintenanceBillView() {
   // テキスト解析共通処理
   // ---------------------------------------------------------------------------
 
-  const applyParsedText = (text: string, fileName?: string) => {
-    const parsed = parseBillText(text);
+  const applyParsedText = async (
+    text: string,
+    fileName?: string,
+    options?: { pdfExtractionMode?: "native_text" | "ocr_fallback" },
+  ) => {
+    const logTag = "[MaintenanceBillOCR]";
+    const textPreview = text.slice(0, 3000);
+    setLastParsedText(text);
+    setShowForm(true);
+
+    let parsed: ReturnType<typeof parseBillText>;
+    try {
+      parsed = parseBillText(text);
+    } catch (err) {
+      console.error(logTag, "parseBillText が例外を投げました（継続して部分表示）", {
+        error: err,
+        textLength: text.length,
+        textPreview,
+      });
+      parsed = { rawText: text, billType: "その他" };
+    }
+
+    let registrationHints: string[] = [];
+    try {
+      registrationHints = extractRegistrationHintsFromText(text);
+    } catch (err) {
+      console.error(logTag, "extractRegistrationHintsFromText 失敗", err);
+    }
+
+    setTaxInferred(parsed.taxInferred === true);
+
+    const billType = parsed.billType ?? "その他";
+
+    let aiResponse: unknown;
+    let aiNote = "";
+    setAiParsing(true);
+    try {
+      const aiResult = await extractInvoiceWithAi(text);
+      if (aiResult.success && aiResult.data) {
+        aiResponse = aiResult.data;
+        aiNote = "\n🤖 AIテキスト解析を適用";
+        const aiVendor = extractInvoiceMeta(aiResponse).vendor_name;
+        if (aiVendor) parsed = { ...parsed, vendorName: aiVendor };
+      } else if (!aiResult.skipped) {
+        aiNote = "\n△ AI解析スキップ（テキストベース解析にフォールバック）";
+      }
+    } catch (err) {
+      console.error(logTag, "AI解析失敗 — フォールバック継続", err);
+      aiNote = "\n△ AI解析エラー（テキストベース解析にフォールバック）";
+    } finally {
+      setAiParsing(false);
+    }
 
     setForm({
       vendorName: parsed.vendorName ?? "",
       clientName: parsed.clientName ?? "",
       billingMonth: parsed.billingMonth ?? "",
       issueDate: parsed.issueDate ?? "",
-      billType: parsed.billType ?? "その他",
+      billType,
       totalAmount: String(safeNumber(parsed.totalAmount)),
       maintenanceSubtotalExTax: String(safeNumber(parsed.maintenanceSubtotalExTax)),
       taxAmount: String(safeNumber(parsed.taxAmount)),
@@ -282,15 +551,56 @@ export function MaintenanceBillView() {
       memo: "",
     });
 
-    // ファイル名の自動設定
     if (fileName && !sourceFileName) setSourceFileName(fileName);
 
-    // 車両別内訳を解析（超緩和パーサー + 三菱ふそう対応）
-    const billType = parsed.billType ?? "その他";
-    const vehicles = parseVehicleTable(text, billType);
-    const editable = vehicles.map((v) => sanitizeEditableRow(v, vehicleList));
+    const ocrResult = parseMaintenanceBillOcr(text, billType, parsed, aiResponse);
+    let vehicles = ensureParsedVehicleEntries(ocrResult.vehicles).filter((v) =>
+      isValidInvoiceVehicleNumber(v.vehicleNumber ?? ""),
+    );
+    const ocrHasData = ocrResult.hasData && vehicles.length > 0;
+
+    if (!ocrHasData) {
+      console.error(logTag, "解析結果0件 — 空テーブル表示（手動入力可）", {
+        vendorName: parsed.vendorName,
+        billType,
+        textLength: text.length,
+        fullText: text,
+      });
+    }
+
+    const safeVehicleList = Array.isArray(vehicleList) ? vehicleList : [];
+    const safeHints = Array.isArray(registrationHints) ? registrationHints : [];
+
+    let editable: EditableVehicleRow[] = [];
+    try {
+      editable = vehicles.map((v) =>
+        sanitizeEditableRow(v, safeVehicleList, safeHints),
+      );
+    } catch (err) {
+      console.error(logTag, "sanitizeEditableRow で失敗（行ごとにスキップ）", {
+        error: err,
+        vehicleCount: vehicles.length,
+      });
+      editable = vehicles.flatMap((v) => {
+        try {
+          return [sanitizeEditableRow(v, safeVehicleList, safeHints)];
+        } catch (rowErr) {
+          console.error(logTag, "行のサニタイズ失敗", { row: v, error: rowErr });
+          return [];
+        }
+      });
+    }
+
     setVehiclePreview(editable);
-    if (editable.length > 0) syncFormFromVehicles(editable);
+    if (editable.length > 0) {
+      syncFormFromVehicles(editable);
+    } else if (!ocrHasData) {
+      setVehiclePreview([]);
+    }
+
+    const exTax =
+      safeNumber(parsed.maintenanceSubtotalExTax) +
+      safeNumber(parsed.expensesSubtotal);
 
     // 解析フィードバック
     const flds: [string, string | undefined][] = [
@@ -298,18 +608,87 @@ export function MaintenanceBillView() {
       ["種別", parsed.billType],
       ["請求月", parsed.billingMonth],
       ["発行日", parsed.issueDate],
-      ["御請求総額", safeNumber(parsed.totalAmount) > 0 ? formatYen(parsed.totalAmount) : ""],
-      ["整備費(税抜)", safeNumber(parsed.maintenanceSubtotalExTax) > 0 ? formatYen(parsed.maintenanceSubtotalExTax) : ""],
-      ["消費税", safeNumber(parsed.taxAmount) > 0 ? formatYen(parsed.taxAmount) : ""],
-      ["諸費用", safeNumber(parsed.expensesSubtotal) > 0 ? formatYen(parsed.expensesSubtotal) : ""],
+      ["税抜金額", exTax > 0 ? formatYen(exTax) : ""],
+      ["消費税額", safeNumber(parsed.taxAmount) > 0 ? formatYen(parsed.taxAmount) : ""],
+      ["税込合計", safeNumber(parsed.totalAmount) > 0 ? formatYen(parsed.totalAmount) : ""],
+      ["諸費用(内訳)", safeNumber(parsed.expensesSubtotal) > 0 ? formatYen(parsed.expensesSubtotal) : ""],
     ];
     const filled = flds.filter(([, v]) => v).map(([k, v]) => `✓ ${k}: ${v}`);
     const empty = flds.filter(([, v]) => !v).map(([k]) => `△ ${k}: 未取得`);
-    const vehicleLine =
-      vehicles.length > 0
-        ? `\n🚛 車両明細 ${vehicles.length}件 を検出`
-        : "\n⚠ 車両明細は検出されませんでした（下の② で手動入力可能）";
-    setParseResult([...filled, ...empty].join("\n") + vehicleLine);
+    const taxSummary = vehicles
+      .map((v) => v.taxCategory)
+      .filter(Boolean)
+      .reduce<Record<string, number>>((acc, cat) => {
+        const k = cat ?? "ex_tax";
+        acc[k] = (acc[k] ?? 0) + 1;
+        return acc;
+      }, {});
+    const taxLine = Object.keys(taxSummary).length
+      ? `\n📋 税区分: ${Object.entries(taxSummary)
+          .map(([k, n]) => {
+            const label =
+              TAX_CATEGORY_OPTIONS.find((o) => o.value === k)?.label ?? k;
+            return `${label}×${n}`;
+          })
+          .join(" / ")}`
+      : "";
+    const extractionModeLine =
+      ocrResult.extractionMode === "text"
+        ? "\n📄 テキストベース解析（PDF生テキストから車両番号・金額を直接検索）"
+        : ocrResult.extractionMode === "legacy"
+          ? "\n📋 補完パーサーで解析（テキスト抽出で不足分を補完）"
+          : "";
+    const pdfSourceLine =
+      options?.pdfExtractionMode === "native_text"
+        ? "\n✓ PDFネイティブテキスト抽出（画像変換なし）"
+        : options?.pdfExtractionMode === "ocr_fallback"
+          ? "\n📷 スキャンPDFのためOCRでテキスト化後に解析"
+          : "";
+    const snapshot = buildOcrOriginalSnapshot({
+      rawText: text,
+      extractionMode: ocrResult.extractionMode ?? "text",
+      pdfExtractionMode: options?.pdfExtractionMode,
+      ocrResult,
+      aiResponse,
+      vendorName: parsed.vendorName,
+    });
+    setOcrOriginalSnapshot(snapshot);
+
+    const vehicleLine = ocrHasData
+      ? `\n🚛 車両別内訳: ${vehicles.length}件を反映（金額はフロント側で数値化・税込逆算）${taxLine}${extractionModeLine}${pdfSourceLine}${aiNote}\n💡 諸費用（重量税等）は「諸費用」欄へ手入力してください`
+      : `\n⚠ ${PARSE_FAIL_MESSAGE}`;
+    const inferredLine = parsed.taxInferred
+      ? "\n💡 税抜・消費税は税込合計からの推測値です。②で目視確認してください。"
+      : "";
+    setParseResult([...filled, ...empty].join("\n") + vehicleLine + inferredLine);
+  };
+
+  const setExTaxTotal = (amount: number) => {
+    setTaxInferred(false);
+    setForm((f) => {
+      const expenses = safeNumber(f.expensesSubtotal);
+      const maintenance = Math.max(0, amount - expenses);
+      const exTax = maintenance + expenses;
+      const tax = safeNumber(f.taxAmount);
+      return {
+        ...f,
+        maintenanceSubtotalExTax: String(maintenance),
+        totalAmount: String(exTax + tax),
+      };
+    });
+  };
+
+  const setTaxAmountField = (amount: number) => {
+    setTaxInferred(false);
+    setForm((f) => {
+      const exTax =
+        safeNumber(f.maintenanceSubtotalExTax) + safeNumber(f.expensesSubtotal);
+      return {
+        ...f,
+        taxAmount: String(amount),
+        totalAmount: String(exTax + amount),
+      };
+    });
   };
 
   // ---------------------------------------------------------------------------
@@ -318,16 +697,17 @@ export function MaintenanceBillView() {
 
   const processPdfFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
+      resetOcrSession({ clearPasteText: true });
       setParseResult("⚠ PDFファイル（.pdf）を選択してください。");
       return;
     }
+
+    resetOcrSession({ clearPasteText: true });
+    const activeMode = importModeRef.current;
     setPdfLoading(true);
-    setPdfFileName(null);
-    setParseResult(null);
-    setVehiclePreview([]);
-    setOcrProgress(null);
+
     try {
-      const { text, usedOcr } = await extractTextFromPdf(file, (p) => {
+      const { text, usedOcr, extractionMode } = await extractTextFromPdf(file, (p) => {
         setOcrProgress(p);
       });
 
@@ -339,34 +719,51 @@ export function MaintenanceBillView() {
         return;
       }
 
-      if (isKashimaBillText(text, file.name)) {
-        setPdfFileName(file.name);
-        setImportMode("fuel");
-        setFuelPrefill({ text, fileName: file.name });
-        setParseResult(
-          "✓ 加島様燃料代請求書を検出しました。「燃料代（加島）」タブで車番計のみ集計します。",
-        );
-        if (usedOcr) {
+      if (activeMode === "fuel") {
+        if (isKashimaBillText(text, file.name)) {
+          setPdfFileName(file.name);
+          setFuelPrefill({ text, fileName: file.name });
           setParseResult(
-            (prev) =>
-              (prev ?? "") +
-              "\n\n📷 OCRで読み取りました。車両・金額をご確認ください。",
+            "✓ 加島様燃料代請求書を検出しました。車番計を車両別に自動入力します。",
           );
+          if (usedOcr) {
+            setParseResult(
+              (prev) =>
+                (prev ?? "") +
+                "\n\n📷 OCRで読み取りました。車両・金額をご確認ください。",
+            );
+          }
+          return;
         }
+        setParseResult(
+          "⚠ 燃料代請求書として認識できませんでした。「整備請求書」タブで読み込んでください。",
+        );
+        return;
+      }
+
+      if (activeMode === "toll") {
+        setParseResult("⚠ 高速代は CSV ファイルをアップロードしてください。");
+        return;
+      }
+
+      if (isKashimaBillText(text, file.name)) {
+        setParseResult(
+          "⚠ 燃料代請求書です。「燃料代（加島）」タブを選択してアップロードしてください。",
+        );
         return;
       }
 
       setPdfFileName(file.name);
-      applyParsedText(text, file.name);
+      await applyParsedText(text, file.name, { pdfExtractionMode: extractionMode });
 
       if (usedOcr) {
-        // OCR使用時は解析結果の末尾にOCR旨を追記
         setParseResult((prev) =>
-          (prev ?? "") + "\n\n📷 OCRで文字認識しました。認識精度に限界があるため、金額・車両番号をご確認ください。",
+          (prev ?? "") +
+          "\n\n📷 スキャン画像PDFのためOCRで文字認識しました。レイアウト差の影響を受けやすいため、金額・車両番号をご確認ください。",
         );
       }
     } catch (err) {
-      console.error("PDF解析エラー:", err);
+      console.error("[MaintenanceBillOCR] PDF解析エラー:", err);
       setParseResult(
         `⚠ PDF解析中にエラーが発生しました:\n${err instanceof Error ? err.message : String(err)}\n\nテキスト入力欄から手動で入力してください。`,
       );
@@ -391,22 +788,48 @@ export function MaintenanceBillView() {
   };
 
   // テキスト手動解析
-  const handleParseText = () => {
+  const handleParseText = async () => {
     const trimmed = pasteText.trim();
     if (!trimmed) {
       setParseResult("⚠ テキストエリアが空です。請求書の文字をコピーして貼り付けてください。");
       return;
     }
-    if (isKashimaBillText(trimmed)) {
-      setImportMode("fuel");
+
+    resetOcrSession();
+
+    const activeMode = importModeRef.current;
+    if (activeMode === "fuel" && isKashimaBillText(trimmed)) {
       setFuelPrefill({ text: trimmed });
       setParseResult(
-        "✓ 加島様燃料代テキストを検出しました。「燃料代（加島）」タブで車番計のみ集計します。",
+        "✓ 加島様燃料代テキストを検出しました。車番計を車両別に自動入力します。",
       );
       return;
     }
-    setVehiclePreview([]);
-    applyParsedText(trimmed);
+
+    if (activeMode === "maintenance" && isKashimaBillText(trimmed)) {
+      setParseResult(
+        "⚠ 燃料代請求書のテキストです。「燃料代（加島）」タブを選択してください。",
+      );
+      return;
+    }
+
+    if (activeMode !== "maintenance") {
+      setParseResult("⚠ 整備請求書タブを選択してからテキストを解析してください。");
+      return;
+    }
+
+    try {
+      await applyParsedText(trimmed);
+    } catch (err) {
+      console.error("[MaintenanceBillOCR] テキスト貼り付け解析エラー:", {
+        error: err,
+        textLength: trimmed.length,
+        fullText: trimmed,
+      });
+      setParseResult(
+        `⚠ 解析中にエラーが発生しましたが、テキストは保持されています。\n${err instanceof Error ? err.message : String(err)}\n\n車両別内訳は手動で追加できます。`,
+      );
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -438,47 +861,118 @@ export function MaintenanceBillView() {
     }
     setSaving(true);
     try {
-      const bill = buildMaintenanceBill(
-        {
-          vendorName: form.vendorName,
-          clientName: form.clientName,
-          billingMonth: parseJapaneseBillingMonth(form.billingMonth) ?? form.billingMonth,
-          issueDate: parseJapaneseDate(form.issueDate) ?? form.issueDate,
-          billType: form.billType,
-          totalAmount: parseAmount(form.totalAmount),
-          maintenanceSubtotalExTax: parseAmount(form.maintenanceSubtotalExTax),
-          taxAmount: parseAmount(form.taxAmount),
-          expensesSubtotal: parseAmount(form.expensesSubtotal),
-        },
-        { memo: form.memo, sourceFileName, billType: form.billType },
-      );
+      const billingMonth =
+        parseJapaneseBillingMonth(form.billingMonth) ?? form.billingMonth;
+      const issueDate =
+        parseJapaneseDate(form.issueDate) ?? form.issueDate;
 
       const validRows = vehiclePreview.filter(
         (r) => r.vehicleNumber.trim() || rowLineTotal(r) > 0,
       );
+
+      const editedSnapshot = buildEditedSnapshot({
+        vendorName: form.vendorName,
+        clientName: form.clientName,
+        billingMonth,
+        issueDate,
+        billType: form.billType,
+        totalAmount: inclTaxTotal,
+        maintenanceSubtotalExTax: parseAmount(form.maintenanceSubtotalExTax),
+        taxAmount: parseAmount(form.taxAmount),
+        expensesSubtotal: parseAmount(form.expensesSubtotal),
+        memo: form.memo,
+        vehicles: validRows,
+      });
+
+      const existingBill = editingBillId
+        ? await getMaintenanceBillById(editingBillId)
+        : undefined;
+
+      const bill = buildMaintenanceBill(
+        {
+          vendorName: form.vendorName,
+          clientName: form.clientName,
+          billingMonth,
+          issueDate,
+          billType: form.billType,
+          totalAmount: inclTaxTotal,
+          maintenanceSubtotalExTax: parseAmount(form.maintenanceSubtotalExTax),
+          taxAmount: parseAmount(form.taxAmount),
+          expensesSubtotal: parseAmount(form.expensesSubtotal),
+        },
+        {
+          id: editingBillId ?? undefined,
+          createdAt: editingCreatedAt ?? existingBill?.createdAt,
+          memo: form.memo,
+          sourceFileName,
+          billType: form.billType,
+          ocrOriginalData:
+            existingBill?.ocrOriginalData ?? ocrOriginalSnapshot ?? undefined,
+          editedData: editedSnapshot,
+        },
+      );
+
       const expenseRecords =
         validRows.length > 0
           ? buildVehicleExpenseRecords(validRows, bill)
           : [];
-      await upsertBillWithExpenses(bill, expenseRecords);
+
+      if (editingBillId) {
+        await updateBillWithExpenses(bill, expenseRecords);
+      } else {
+        await upsertBillWithExpenses(bill, expenseRecords);
+      }
 
       await load();
+      await notifyVehicleExpensesChange();
       resetForm();
     } finally {
       setSaving(false);
     }
   };
 
+  const handleEdit = async (bill: VehicleMaintenanceBill) => {
+    const expenses = await loadVehicleExpensesByBillId(bill.id);
+    setEditingBillId(bill.id);
+    setEditingCreatedAt(bill.createdAt);
+    setOcrOriginalSnapshot(bill.ocrOriginalData ?? null);
+    setLastParsedText(bill.ocrOriginalData?.rawText ?? "");
+    setSourceFileName(bill.sourceFileName ?? "");
+    setTaxInferred(false);
+    setForm({
+      vendorName: bill.vendorName,
+      clientName: bill.clientName,
+      billingMonth: bill.billingMonth,
+      issueDate: bill.issueDate,
+      billType: bill.billType,
+      totalAmount: String(safeNumber(bill.totalAmount)),
+      maintenanceSubtotalExTax: String(safeNumber(bill.maintenanceSubtotalExTax)),
+      taxAmount: String(safeNumber(bill.taxAmount)),
+      expensesSubtotal: String(safeNumber(bill.expensesSubtotal)),
+      memo: bill.memo ?? "",
+    });
+    setVehiclePreview(
+      expenses.length > 0
+        ? expenses.map(expenseToEditableRow)
+        : [emptyVehicleRow()],
+    );
+    setParseResult(
+      bill.editedData
+        ? "✏️ 編集モード — 保存すると編集内容がFirestoreに反映されます。"
+        : "✏️ 編集モード — 車両別内訳を修正して保存してください。",
+    );
+    setShowForm(true);
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(bill.id);
+      return next;
+    });
+  };
+
   const resetForm = () => {
-    setForm(EMPTY_FORM);
-    setPasteText("");
-    setSourceFileName("");
-    setPdfFileName(null);
-    setParseResult(null);
-    setVehiclePreview([]);
-    setOcrProgress(null);
-    setShowTextFallback(false);
+    resetOcrSession({ clearPasteText: true });
     setShowForm(false);
+    importModeRef.current = "maintenance";
     setImportMode("maintenance");
   };
 
@@ -495,6 +989,7 @@ export function MaintenanceBillView() {
       return next;
     });
     await load();
+    await notifyVehicleExpensesChange();
   };
 
   // ---------------------------------------------------------------------------
@@ -545,7 +1040,17 @@ export function MaintenanceBillView() {
             整備費・燃料代（加島様）・高速代（KJS/コーポ）を車両別に登録・集計
           </p>
         </div>
-        <Button size="sm" onClick={() => setShowForm((v) => !v)}>
+        <Button
+          size="sm"
+          onClick={() => {
+            if (showForm) {
+              resetForm();
+            } else {
+              resetOcrSession();
+              setShowForm(true);
+            }
+          }}
+        >
           <Plus className="mr-1 size-4" />
           請求書を登録
         </Button>
@@ -555,9 +1060,12 @@ export function MaintenanceBillView() {
       {showForm && (
         <Card className="border-primary/30 bg-primary/5">
           <CardHeader className="px-4 py-2.5">
-            <CardTitle className="text-sm">新規経費の登録</CardTitle>
+            <CardTitle className="text-sm">
+              {editingBillId ? "✏️ 請求書の編集" : "新規経費の登録"}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 px-4 pb-4">
+            {!editingBillId && (
             <div className="flex flex-wrap gap-1.5">
               {(
                 [
@@ -569,7 +1077,7 @@ export function MaintenanceBillView() {
                 <button
                   key={mode}
                   type="button"
-                  onClick={() => setImportMode(mode)}
+                  onClick={() => handleImportModeChange(mode)}
                   className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                     importMode === mode
                       ? "border-primary bg-primary/10 text-primary"
@@ -580,33 +1088,34 @@ export function MaintenanceBillView() {
                 </button>
               ))}
             </div>
+            )}
 
-            {importMode === "fuel" && (
+            {importMode === "fuel" && !editingBillId && (
               <FuelBillImportForm
                 vehicles={vehicleList}
                 initialText={fuelPrefill?.text}
                 initialFileName={fuelPrefill?.fileName}
                 onPrefillConsumed={() => setFuelPrefill(null)}
                 onSaved={() => {
-                  void load();
+                  void load().then(() => notifyVehicleExpensesChange());
                   resetForm();
                 }}
                 onCancel={resetForm}
               />
             )}
 
-            {importMode === "toll" && (
+            {importMode === "toll" && !editingBillId && (
               <TollCsvImportForm
                 vehicles={vehicleList}
                 onSaved={() => {
-                  void load();
+                  void load().then(() => notifyVehicleExpensesChange());
                   resetForm();
                 }}
                 onCancel={resetForm}
               />
             )}
 
-            {importMode === "maintenance" && (
+            {(importMode === "maintenance" || editingBillId) && (
             <>
             {/* ① PDF / テキスト入力 */}
             <div className="space-y-2">
@@ -780,8 +1289,11 @@ export function MaintenanceBillView() {
                     <thead>
                       <tr className="border-b border-blue-200 text-blue-700">
                         <th className="min-w-[140px] px-2 py-1.5 text-left font-medium">車両ナンバー</th>
+                        <th className="min-w-[120px] px-1 py-1.5 text-left font-medium">整備種別</th>
+                        <th className="min-w-[100px] px-1 py-1.5 text-left font-medium">税区分</th>
                         <th className="min-w-[80px] px-1 py-1.5 text-right font-medium">技術料</th>
                         <th className="min-w-[80px] px-1 py-1.5 text-right font-medium">部品代</th>
+                        <th className="min-w-[72px] px-1 py-1.5 text-right font-medium">消費税</th>
                         <th className="min-w-[80px] px-1 py-1.5 text-right font-medium">諸費用</th>
                         <th className="min-w-[80px] px-1 py-1.5 text-right font-medium">合計</th>
                         <th className="w-8 px-1 py-1.5" />
@@ -807,6 +1319,56 @@ export function MaintenanceBillView() {
                             />
                           </td>
                           <td className="px-1 py-1">
+                            <Select
+                              value={v.maintenanceType ?? "その他"}
+                              onValueChange={(val) =>
+                                updateVehicleRow(v.id, {
+                                  maintenanceType: val as MaintenanceType,
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-7 w-full text-[10px]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {MAINTENANCE_TYPE_OPTIONS.map((opt) => (
+                                  <SelectItem
+                                    key={opt.value}
+                                    value={opt.value}
+                                    className="text-xs"
+                                  >
+                                    {opt.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
+                          <td className="px-1 py-1">
+                            <Select
+                              value={v.taxCategory ?? "ex_tax"}
+                              onValueChange={(val) =>
+                                updateVehicleRow(v.id, {
+                                  taxCategory: val as VehicleRowTaxCategory,
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-7 w-full text-[10px]">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {TAX_CATEGORY_OPTIONS.map((opt) => (
+                                  <SelectItem
+                                    key={opt.value}
+                                    value={opt.value}
+                                    className="text-xs"
+                                  >
+                                    {opt.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
+                          <td className="px-1 py-1">
                             <CurrencyInput
                               className="h-7 text-xs"
                               value={safeNumber(v.laborFee)}
@@ -827,20 +1389,25 @@ export function MaintenanceBillView() {
                           <td className="px-1 py-1">
                             <CurrencyInput
                               className="h-7 text-xs"
+                              value={safeNumber(v.consumptionTax)}
+                              onChange={(n) =>
+                                updateVehicleRow(v.id, { consumptionTax: n })
+                              }
+                            />
+                          </td>
+                          <td className="px-1 py-1">
+                            <CurrencyInput
+                              className="h-7 text-xs"
                               value={safeNumber(v.commonExpense)}
                               onChange={(n) =>
                                 updateVehicleRow(v.id, { commonExpense: n })
                               }
                             />
                           </td>
-                          <td className="px-1 py-1">
-                            <CurrencyInput
-                              className="h-7 text-xs font-semibold"
-                              value={safeNumber(v.totalAmount)}
-                              onChange={(n) =>
-                                updateVehicleRow(v.id, { totalAmount: n })
-                              }
-                            />
+                          <td className="px-1 py-1 text-right">
+                            <div className="tabular-nums text-xs font-semibold">
+                              {formatYen(rowLineTotal(v))}
+                            </div>
                           </td>
                           <td className="px-1 py-1 text-center">
                             <button
@@ -858,11 +1425,16 @@ export function MaintenanceBillView() {
                     <tfoot>
                       <tr className="bg-blue-100/80 font-semibold">
                         <td className="px-2 py-1.5 text-blue-800">合計</td>
+                        <td />
+                        <td />
                         <td className="px-1 py-1.5 text-right tabular-nums text-blue-800">
                           {formatYen(vehiclePreview.reduce((s, v) => s + safeNumber(v.laborFee), 0))}
                         </td>
                         <td className="px-1 py-1.5 text-right tabular-nums text-blue-800">
                           {formatYen(vehiclePreview.reduce((s, v) => s + safeNumber(v.partsFee), 0))}
+                        </td>
+                        <td className="px-1 py-1.5 text-right tabular-nums text-blue-800">
+                          {formatYen(vehiclePreview.reduce((s, v) => s + safeNumber(v.consumptionTax), 0))}
                         </td>
                         <td className="px-1 py-1.5 text-right tabular-nums text-blue-800">
                           {formatYen(vehiclePreview.reduce((s, v) => s + safeNumber(v.commonExpense), 0))}
@@ -948,48 +1520,52 @@ export function MaintenanceBillView() {
                     onBlur={(e) => handleIssueDateBlur(e.target.value)}
                   />
                 </FieldRow>
-                <FieldRow label="御請求総額（円）">
-                  <CurrencyInput
-                    className="h-8 text-sm"
-                    value={safeNumber(form.totalAmount)}
-                    onChange={(n) =>
-                      setForm((f) => ({ ...f, totalAmount: String(n) }))
-                    }
-                  />
-                </FieldRow>
-                <FieldRow label="整備費（税抜）（円）">
-                  <CurrencyInput
-                    className="h-8 text-sm"
-                    value={safeNumber(form.maintenanceSubtotalExTax)}
-                    onChange={(n) =>
-                      setForm((f) => ({
-                        ...f,
-                        maintenanceSubtotalExTax: String(n),
-                      }))
-                    }
-                  />
-                </FieldRow>
-                <FieldRow label="消費税（円）">
-                  <CurrencyInput
-                    className="h-8 text-sm"
-                    value={safeNumber(form.taxAmount)}
-                    onChange={(n) =>
-                      setForm((f) => ({ ...f, taxAmount: String(n) }))
-                    }
-                  />
-                </FieldRow>
-                <FieldRow label="諸費用小計（円）">
-                  <CurrencyInput
-                    className="h-8 text-sm"
-                    value={safeNumber(form.expensesSubtotal)}
-                    onChange={(n) =>
-                      setForm((f) => ({
-                        ...f,
-                        expensesSubtotal: String(n),
-                      }))
-                    }
-                  />
-                </FieldRow>
+              <div className="sm:col-span-2 rounded-lg border border-amber-200/80 bg-amber-50/40 p-3">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-amber-900">
+                    金額内訳（税区分）
+                  </span>
+                  {taxInferred && (
+                    <Badge
+                      variant="outline"
+                      className="border-amber-500 bg-amber-100 text-[10px] text-amber-800"
+                    >
+                      推測値 — 目視で確認してください
+                    </Badge>
+                  )}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <FieldRow
+                    label="税抜金額（円）"
+                    hint="小計・本体価格・今回売上金額"
+                  >
+                    <CurrencyInput
+                      className={`h-8 text-sm ${taxInferred ? "border-amber-400 bg-amber-50/80" : ""}`}
+                      value={exTaxTotal}
+                      onChange={setExTaxTotal}
+                    />
+                  </FieldRow>
+                  <FieldRow label="消費税額（円）" hint="消費税・地方消費税">
+                    <CurrencyInput
+                      className={`h-8 text-sm ${taxInferred ? "border-amber-400 bg-amber-50/80" : ""}`}
+                      value={taxTotal}
+                      onChange={setTaxAmountField}
+                    />
+                  </FieldRow>
+                  <FieldRow label="税込合計金額（円）" hint="税抜 ＋ 消費税（自動計算）">
+                    <div className="flex h-8 items-center rounded-md border bg-muted/50 px-3 text-sm font-bold tabular-nums">
+                      {formatYen(inclTaxTotal)}
+                    </div>
+                  </FieldRow>
+                </div>
+                {safeNumber(form.expensesSubtotal) > 0 && (
+                  <p className="mt-2 text-[10px] text-muted-foreground">
+                    諸費用（税抜内訳）: {formatYen(form.expensesSubtotal)}
+                    {" — "}
+                    車両別テーブルの諸費用列と連動
+                  </p>
+                )}
+              </div>
                 <FieldRow label="ソースファイル名" hint="任意">
                   <Input
                     className="h-8 text-sm"
@@ -1015,8 +1591,14 @@ export function MaintenanceBillView() {
               <Button size="sm" variant="outline" onClick={resetForm}>
                 キャンセル
               </Button>
-              <Button size="sm" onClick={handleSave} disabled={saving}>
-                {saving ? "保存中…" : `登録する${vehiclePreview.length > 0 ? `（車両${vehiclePreview.length}件）` : ""}`}
+              <Button size="sm" onClick={() => void handleSave()} disabled={saving || aiParsing}>
+                {saving
+                  ? "保存中…"
+                  : aiParsing
+                    ? "AI解析中…"
+                    : editingBillId
+                      ? `更新保存${vehiclePreview.length > 0 ? `（車両${vehiclePreview.length}件）` : ""}`
+                      : `確定${vehiclePreview.length > 0 ? `（車両${vehiclePreview.length}件）` : ""}`}
               </Button>
             </div>
             </>
@@ -1108,14 +1690,23 @@ export function MaintenanceBillView() {
                         {/* 金額内訳 */}
                         <dl className="mb-3 grid gap-1.5 text-xs sm:grid-cols-2">
                           <DetailRow label="請求先" value={bill.clientName} />
-                          <DetailRow label="整備費（税抜）" value={formatYen(bill.maintenanceSubtotalExTax)} mono />
-                          <DetailRow label="消費税" value={formatYen(bill.taxAmount)} mono />
-                          <DetailRow label="諸費用小計" value={formatYen(bill.expensesSubtotal)} mono />
                           <DetailRow
-                            label="整備費（税込）"
-                            value={formatYen(safeNumber(bill.maintenanceSubtotalExTax) + safeNumber(bill.taxAmount))}
+                            label="税抜金額"
+                            value={formatYen(
+                              safeNumber(bill.maintenanceSubtotalExTax) +
+                                safeNumber(bill.expensesSubtotal),
+                            )}
                             mono
                           />
+                          <DetailRow label="消費税額" value={formatYen(bill.taxAmount)} mono />
+                          <DetailRow label="税込合計" value={formatYen(bill.totalAmount)} mono />
+                          {safeNumber(bill.expensesSubtotal) > 0 && (
+                            <DetailRow
+                              label="諸費用（内訳）"
+                              value={formatYen(bill.expensesSubtotal)}
+                              mono
+                            />
+                          )}
                           {bill.memo && <DetailRow label="メモ" value={bill.memo} span />}
                         </dl>
 
@@ -1131,8 +1722,10 @@ export function MaintenanceBillView() {
                                 <thead className="bg-muted/60">
                                   <tr>
                                     <th className="px-2.5 py-1 text-left font-medium text-muted-foreground">車番</th>
+                                    <th className="px-2 py-1 text-left font-medium text-muted-foreground">整備種別</th>
                                     <th className="px-2 py-1 text-right font-medium text-muted-foreground">技術料</th>
                                     <th className="px-2 py-1 text-right font-medium text-muted-foreground">部品代</th>
+                                    <th className="px-2 py-1 text-right font-medium text-muted-foreground">消費税</th>
                                     <th className="px-2 py-1 text-right font-medium text-muted-foreground">諸費用</th>
                                     <th className="px-2 py-1 text-right font-medium text-muted-foreground">合計</th>
                                   </tr>
@@ -1143,11 +1736,17 @@ export function MaintenanceBillView() {
                                       <td className="px-2.5 py-1 font-mono text-[11px]">
                                         {exp.vehicleNumber}
                                       </td>
+                                      <td className="px-2 py-1 text-[11px]">
+                                        {exp.maintenanceType ?? "—"}
+                                      </td>
                                       <td className="px-2 py-1 text-right tabular-nums">
                                         {formatYen(exp.laborFee, { zeroAsDash: true })}
                                       </td>
                                       <td className="px-2 py-1 text-right tabular-nums">
                                         {formatYen(exp.partsFee, { zeroAsDash: true })}
+                                      </td>
+                                      <td className="px-2 py-1 text-right tabular-nums">
+                                        {formatYen(exp.consumptionTax ?? 0, { zeroAsDash: true })}
                                       </td>
                                       <td className="px-2 py-1 text-right tabular-nums">
                                         {formatYen(exp.commonExpense, { zeroAsDash: true })}
@@ -1170,8 +1769,17 @@ export function MaintenanceBillView() {
                           </p>
                         )}
 
-                        {/* 削除ボタン */}
-                        <div className="flex justify-end">
+                        {/* 編集・削除 */}
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => void handleEdit(bill)}
+                          >
+                            <Pencil className="mr-1 size-3" />
+                            編集
+                          </Button>
                           {deleteConfirmId === bill.id ? (
                             <div className="flex items-center gap-2 text-xs">
                               <span className="text-destructive">本当に削除しますか？</span>

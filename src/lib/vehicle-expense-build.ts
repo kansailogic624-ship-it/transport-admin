@@ -26,6 +26,8 @@ export function buildSimpleExpenseRecords(
       laborFee: 0,
       partsFee: 0,
       commonExpense: 0,
+      consumptionTax: 0,
+      maintenanceType: "その他",
       totalAmount: r.totalAmount,
       parentBillId: parentBill.id,
       createdAt: new Date().toISOString(),

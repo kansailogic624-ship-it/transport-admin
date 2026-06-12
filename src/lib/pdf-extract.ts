@@ -16,6 +16,8 @@ export type ExtractResult = {
   text: string;
   /** true: OCR を使用した。false: ネイティブテキスト抽出 */
   usedOcr: boolean;
+  /** ネイティブPDFテキスト / スキャンOCRフォールバック */
+  extractionMode: "native_text" | "ocr_fallback";
 };
 
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
@@ -36,7 +38,7 @@ export async function extractTextFromPdf(
   const nativeText = await extractNativeText(file);
 
   if (nativeText.trim().length > 20) {
-    return { text: nativeText, usedOcr: false };
+    return { text: nativeText, usedOcr: false, extractionMode: "native_text" };
   }
 
   // ── Step 2: OCR フォールバック ───────────────────────────────────
@@ -48,7 +50,7 @@ export async function extractTextFromPdf(
   const { ocrPdfFile } = await import("./pdf-ocr");
   const ocrText = await ocrPdfFile(file, onProgress);
 
-  return { text: ocrText, usedOcr: true };
+  return { text: ocrText, usedOcr: true, extractionMode: "ocr_fallback" };
 }
 
 // ---------------------------------------------------------------------------

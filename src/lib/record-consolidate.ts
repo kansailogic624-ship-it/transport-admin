@@ -1,5 +1,5 @@
 import { normalizeDriverName } from "./driving-report-parser";
-import { normalizeIsoDate } from "./import-match-keys";
+import { datesMatch, driverNamesMatch, normalizeIsoDate } from "./import-match-keys";
 import { applyDayRevenueToTrips, dailyRevenueFromTrips } from "./day-revenue";
 import { mergeReportStatus } from "./report-status";
 import { normalizeRecord } from "./trip-normalize";
@@ -19,14 +19,55 @@ export function recordDayKey(record: DailyRecord): string {
   return driverDayKey(record.date, record.driverName);
 }
 
+/** 日付＋ドライバー名のあいまい一致（山崎 ↔ 山崎太郎 等） */
+export function recordsSameDriverDay(a: DailyRecord, b: DailyRecord): boolean {
+  return (
+    datesMatch(a.date, b.date) && driverNamesMatch(a.driverName, b.driverName)
+  );
+}
+
 function mergeFusionOptions(
-  a: FusionDispatchOption[] = [],
-  b: FusionDispatchOption[] = [],
+  a: FusionDispatchOption[] | null | undefined,
+  b: FusionDispatchOption[] | null | undefined,
+  context?: { recordA?: DailyRecord; recordB?: DailyRecord },
 ): FusionDispatchOption[] {
+  console.log("mergeFusionOptions", {
+    a,
+    b,
+    aType: typeof a,
+    bType: typeof b,
+  });
+
+  const safeA = Array.isArray(a) ? a : [];
+  const safeB = Array.isArray(b) ? b : [];
+
+  if (!Array.isArray(a) || !Array.isArray(b)) {
+    console.warn("mergeFusionOptions: 配列以外の fusionDispatchOptions を検出", {
+      a,
+      b,
+      aIsArray: Array.isArray(a),
+      bIsArray: Array.isArray(b),
+      recordA: context?.recordA
+        ? {
+            id: context.recordA.id,
+            date: context.recordA.date,
+            driverName: context.recordA.driverName,
+          }
+        : undefined,
+      recordB: context?.recordB
+        ? {
+            id: context.recordB.id,
+            date: context.recordB.date,
+            driverName: context.recordB.driverName,
+          }
+        : undefined,
+    });
+  }
+
   const seen = new Set<string>();
   const out: FusionDispatchOption[] = [];
-  for (const o of [...a, ...b]) {
-    if (!o.dispatchName || seen.has(o.dispatchName)) continue;
+  for (const o of [...safeA, ...safeB]) {
+    if (!o?.dispatchName || seen.has(o.dispatchName)) continue;
     seen.add(o.dispatchName);
     out.push(o);
   }
@@ -54,7 +95,10 @@ export function mergeTwoDailyRecords(
   const primary = a.createdAt <= b.createdAt ? a : b;
   const secondary = a.createdAt <= b.createdAt ? b : a;
 
-  const trips = dedupeTrips([...primary.trips, ...secondary.trips]);
+  const trips = dedupeTrips([
+    ...(Array.isArray(primary.trips) ? primary.trips : []),
+    ...(Array.isArray(secondary.trips) ? secondary.trips : []),
+  ]);
 
   // FM配車では業務ごとに異なる売上が設定される（per-trip モデル）。
   // 2種類以上の異なる売上が既に存在する場合は再配分せずそのまま保持する。
@@ -122,6 +166,7 @@ export function mergeTwoDailyRecords(
     fusionDispatchOptions: mergeFusionOptions(
       primary.fusionDispatchOptions,
       secondary.fusionDispatchOptions,
+      { recordA: primary, recordB: secondary },
     ),
     primaryLinkedDispatchName:
       primary.primaryLinkedDispatchName ??
@@ -168,14 +213,24 @@ export function consolidateDailyRecordsByDriverDay(
   const order: string[] = [];
 
   for (const record of records) {
-    const key = recordDayKey(record);
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, record);
-      order.push(key);
+    const exactKey = recordDayKey(record);
+    let mergeKey: string | undefined;
+
+    for (const key of order) {
+      const existing = map.get(key);
+      if (existing && recordsSameDriverDay(existing, record)) {
+        mergeKey = key;
+        break;
+      }
+    }
+
+    if (!mergeKey) {
+      map.set(exactKey, record);
+      order.push(exactKey);
       continue;
     }
-    map.set(key, mergeTwoDailyRecords(existing, record));
+
+    map.set(mergeKey, mergeTwoDailyRecords(map.get(mergeKey)!, record));
   }
 
   return order.map((k) => map.get(k)!);

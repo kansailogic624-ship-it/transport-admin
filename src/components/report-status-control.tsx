@@ -53,7 +53,7 @@ export function ReportStatusSelect({
 }: ReportStatusSelectProps) {
   return (
     <Select
-      value={value}
+      value={value ?? ""}
       onValueChange={(v) => {
         if (
           v === "submitted" ||

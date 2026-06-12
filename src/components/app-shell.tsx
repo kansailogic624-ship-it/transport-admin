@@ -1,43 +1,69 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LogOut } from "lucide-react";
 import { DailyDashboard } from "@/components/daily-dashboard";
-import { MasterRegistry } from "@/components/master-registry";
 import { SalarySettingsView } from "@/components/salary-settings-view";
-import { DriverDetailView } from "@/components/driver-detail-view";
 import { MonthlySummary } from "@/components/monthly-summary";
+import { ExecutiveDashboardView } from "@/components/executive-dashboard-view";
 import { AttendanceCheckView } from "@/components/attendance-check-view";
 import { MaintenanceBillView } from "@/components/maintenance-bill-view";
 import { ImportHistoryView } from "@/components/import-history-view";
+import { ImportPreprocessorTab } from "@/components/import-preprocessor/ImportPreprocessorTab";
+import type { PreprocessSourceType } from "@/lib/import-preprocessor";
+import { MasterRegistryView } from "@/components/master-registry-view";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { migrateFromLocalStorageIfNeeded } from "@/services/idb-storage";
 import { migrateIndexedDbToFirestoreOnce } from "@/services/migrate-idb-to-firestore";
+import { clearFirestoreCache } from "@/services/firestore-cache";
+import { clearCollectionBaselines } from "@/services/firestore-utils";
+import {
+  getFirestoreReadStats,
+  getFirestoreWriteStats,
+  printFirestoreIoReport,
+  resetFirestoreIoStats,
+} from "@/services/firestore-read-trace";
 import {
   loadMasters,
   loadRecords,
+  loadVehicleExpenses,
   saveMasters,
   saveRecords,
-} from "@/services/firestore-storage";
+} from "@/lib/db";
 import { SelectedDateProvider } from "@/contexts/selected-date-context";
-import type { DailyRecord, MasterData } from "@/lib/types";
+import type { RecordsPersistOptions } from "@/lib/records-persist";
+import type { DailyRecord, MasterData, VehicleExpenseRecord } from "@/lib/types";
 
 export function AppShell() {
   const { user, logOut } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [records, setRecords] = useState<DailyRecord[]>([]);
   const [masters, setMasters] = useState<MasterData | null>(null);
+  const [vehicleExpenses, setVehicleExpenses] = useState<VehicleExpenseRecord[]>(
+    [],
+  );
   const [initMessage, setInitMessage] = useState("");
+  const [activeTab, setActiveTab] = useState("daily");
+  const [preprocessSourceType, setPreprocessSourceType] =
+    useState<PreprocessSourceType | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mastersSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRecordsRef = useRef<DailyRecord[] | null>(null);
+  const pendingMastersRef = useRef<MasterData | null>(null);
 
   useEffect(() => {
-    if (!user?.uid) return;
-    const uid = user.uid;
+    const uid = user?.uid;
+    if (!uid) return;
 
     let cancelled = false;
     async function init(userId: string) {
+      console.count("loadData");
+      resetFirestoreIoStats();
       setMounted(false);
+      clearFirestoreCache();
+      clearCollectionBaselines();
       // localStorage → IndexedDB（レガシー）
       await migrateFromLocalStorageIfNeeded();
       // IndexedDB → Firestore（一回限り）
@@ -46,14 +72,31 @@ export function AppShell() {
         setInitMessage(migration.message);
       }
 
-      const [loadedRecords, loadedMasters] = await Promise.all([
-        loadRecords(),
-        loadMasters(),
-      ]);
+      const [loadedRecords, loadedMasters, loadedVehicleExpenses] =
+        await Promise.all([
+          loadRecords(),
+          loadMasters(),
+          loadVehicleExpenses(),
+        ]);
       if (cancelled) return;
       setRecords(loadedRecords);
       setMasters(loadedMasters);
+      setVehicleExpenses(loadedVehicleExpenses);
       setMounted(true);
+      if (process.env.NODE_ENV !== "production") {
+        printFirestoreIoReport();
+        const win = window as Window & {
+          __firestoreIoReport?: () => void;
+          __firestoreReadStats?: () => Record<string, number>;
+          __firestoreWriteStats?: () => Record<string, number>;
+          /** @deprecated __firestoreIoReport を使用 */
+          __firestoreReadReport?: () => void;
+        };
+        win.__firestoreIoReport = printFirestoreIoReport;
+        win.__firestoreReadReport = printFirestoreIoReport;
+        win.__firestoreReadStats = getFirestoreReadStats;
+        win.__firestoreWriteStats = getFirestoreWriteStats;
+      }
     }
     init(uid).catch((err) => {
       console.error(err);
@@ -62,17 +105,74 @@ export function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user?.uid]);
 
-  const persistRecords = useCallback((next: DailyRecord[]) => {
-    setRecords(next);
-    saveRecords(next).catch(console.error);
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      if (mastersSaveTimerRef.current) {
+        clearTimeout(mastersSaveTimerRef.current);
+      }
+    };
   }, []);
 
-  const persistMasters = useCallback((next: MasterData) => {
-    setMasters(next);
-    saveMasters(next).catch(console.error);
+  const refreshVehicleExpenses = useCallback(async () => {
+    const next = await loadVehicleExpenses();
+    setVehicleExpenses(next);
+    return next;
   }, []);
+
+  const flushPendingRecords = useCallback(() => {
+    const pending = pendingRecordsRef.current;
+    if (!pending) return;
+    pendingRecordsRef.current = null;
+    void saveRecords(pending).catch((error) => {
+      console.error("Firestore save failed:", error);
+    });
+  }, []);
+
+  const persistRecords = useCallback(
+    (next: DailyRecord[], options?: RecordsPersistOptions) => {
+      setRecords(next);
+      if (options?.skipCloudSave) return;
+
+      pendingRecordsRef.current = next;
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = setTimeout(() => {
+        saveTimerRef.current = null;
+        flushPendingRecords();
+      }, 1500);
+    },
+    [flushPendingRecords],
+  );
+
+  const flushPendingMasters = useCallback(() => {
+    const pending = pendingMastersRef.current;
+    if (!pending) return;
+    pendingMastersRef.current = null;
+    void saveMasters(pending).catch((error) => {
+      console.error("Firestore masters save failed:", error);
+    });
+  }, []);
+
+  const persistMasters = useCallback(
+    (next: MasterData) => {
+      setMasters(next);
+      pendingMastersRef.current = next;
+      if (mastersSaveTimerRef.current) {
+        clearTimeout(mastersSaveTimerRef.current);
+      }
+      mastersSaveTimerRef.current = setTimeout(() => {
+        mastersSaveTimerRef.current = null;
+        flushPendingMasters();
+      }, 1500);
+    },
+    [flushPendingMasters],
+  );
 
   const handleRestore = useCallback(
     (nextRecords: DailyRecord[], nextMasters: MasterData) => {
@@ -119,16 +219,21 @@ export function AppShell() {
         </div>
       </header>
 
-      <Tabs defaultValue="daily" className="min-w-0 space-y-6 overflow-hidden">
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-8">
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="min-w-0 space-y-6 overflow-hidden"
+      >
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
           <TabsTrigger value="daily">日次入力</TabsTrigger>
           <TabsTrigger value="check" className="relative">
             管理チェック
           </TabsTrigger>
-          <TabsTrigger value="drivers">ドライバー別実績</TabsTrigger>
-          <TabsTrigger value="monthly">月次集計・出力</TabsTrigger>
+          <TabsTrigger value="monthly">集計・データ出力</TabsTrigger>
+          <TabsTrigger value="executive">経営ダッシュボード</TabsTrigger>
           <TabsTrigger value="maintenance">車両経費</TabsTrigger>
           <TabsTrigger value="masters">マスタ登録</TabsTrigger>
+          <TabsTrigger value="preprocess">データ前処理</TabsTrigger>
           <TabsTrigger value="import-history">インポート履歴</TabsTrigger>
           <TabsTrigger value="salary">給与設定</TabsTrigger>
         </TabsList>
@@ -139,6 +244,10 @@ export function AppShell() {
             masters={masters}
             onRecordsChange={persistRecords}
             onMastersChange={persistMasters}
+            onGoToPreprocess={(sourceType) => {
+              setPreprocessSourceType(sourceType);
+              setActiveTab("preprocess");
+            }}
           />
         </TabsContent>
 
@@ -150,36 +259,49 @@ export function AppShell() {
           />
         </TabsContent>
 
-        <TabsContent
-          value="drivers"
-          className="mt-0 w-full max-w-full min-w-0 overflow-hidden"
-        >
-          <DriverDetailView
-            records={records}
-            onRecordsChange={persistRecords}
-          />
-        </TabsContent>
-
         <TabsContent value="monthly" className="mt-0">
           <MonthlySummary
             records={records}
             masters={masters}
+            vehicleExpenses={vehicleExpenses}
             onRestore={handleRestore}
             onRecordsChange={persistRecords}
           />
         </TabsContent>
 
+        <TabsContent value="executive" className="mt-0">
+          {masters && (
+            <ExecutiveDashboardView
+              records={records}
+              masters={masters}
+              vehicleExpenses={vehicleExpenses}
+            />
+          )}
+        </TabsContent>
+
         <TabsContent value="maintenance" className="mt-0">
-          <MaintenanceBillView />
+          <MaintenanceBillView
+            onVehicleExpensesChange={() => {
+              void refreshVehicleExpenses();
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="masters" className="mt-0">
-          <MasterRegistry
+          <MasterRegistryView
             records={records}
             masters={masters}
             onRecordsChange={persistRecords}
             onMastersChange={persistMasters}
             onRestore={handleRestore}
+          />
+        </TabsContent>
+
+        <TabsContent value="preprocess" className="mt-0">
+          <ImportPreprocessorTab
+            masters={masters}
+            initialSourceType={preprocessSourceType}
+            onInitialSourceTypeApplied={() => setPreprocessSourceType(null)}
           />
         </TabsContent>
 
@@ -196,6 +318,7 @@ export function AppShell() {
             onMastersChange={persistMasters}
           />
         </TabsContent>
+
       </Tabs>
     </div>
     </SelectedDateProvider>

@@ -61,6 +61,12 @@ export type TripEntry = {
   linkedDispatchName?: string;
   /** 配送件数（ドロップ数）。運転日報明細から自動算出、手動修正可 */
   dropCount?: number;
+  /** Amazon実績CSV: 差異 */
+  amazonDiff?: string;
+  /** Amazon実績CSV: 備考 */
+  amazonMemo?: string;
+  /** Amazon実績CSV: 人件費 */
+  amazonLaborCost?: string;
 };
 
 export type DailyRecord = {
@@ -110,7 +116,11 @@ export type DailyRecord = {
   dayStatus?: "公休" | "有給";
 };
 
-export type ImportType = "rollcall" | "dailyReport" | "fusion";
+export type ImportType =
+  | "rollcall"
+  | "dailyReport"
+  | "fusion"
+  | "amazonPerformance";
 
 export type ImportHistory = {
   id: string;
@@ -125,6 +135,16 @@ export type ImportHistory = {
   affectedRecordIds: string[];
   /** この取込で触れたドライバー×日キー（ID変化・再取込時の明細用） */
   affectedDayKeys?: string[];
+};
+
+/** 月次集計へ按分する固定経費（家賃・光熱費など） */
+export type AllocationExpenseEntry = {
+  id: string;
+  /** 項目名（例: 家賃） */
+  label: string;
+  /** 月額（円） */
+  amount: number;
+  updatedAt?: string;
 };
 
 export type MasterData = {
@@ -143,6 +163,8 @@ export type MasterData = {
   defaultDispatchDaily: number;
   /** 日報⇔FileMaker 配車の学習ルール */
   mappingRules: MappingRule[];
+  /** 月次集計に自動加算する按分経費（複数登録可） */
+  allocationExpenses: AllocationExpenseEntry[];
 };
 
 export const STORAGE_KEY = "transport-admin-records";
@@ -165,6 +187,83 @@ export type BillType =
   | "燃料代"
   | "高速代"
   | "その他";
+
+/**
+ * Amazon実績の生産性・経費管理用レコード（FMスケジュールテーブルとは別保存）
+ */
+export type AmazonPerformanceExpenseRecord = {
+  id: string;
+  /** 運行日 YYYY-MM-DD */
+  serviceDate: string;
+  driverName: string;
+  companyName: string;
+  routeLabel: string;
+  revenue: number;
+  payment: number;
+  diff: number;
+  memo: string;
+  laborCost: number;
+  /** own_update / own_new / partner_new */
+  mergeKind: "own_update" | "own_new" | "partner_new";
+  /** 参照用（FMスケジュールへは書き戻さない） */
+  linkedScheduleRecordId?: string;
+  /** 集計月 YYYY-MM */
+  billingMonth: string;
+  sourceFileName: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** OCR取込時の1行スナップショット（監査・精度改善用） */
+export type InvoiceOcrLineSnapshot = {
+  vehicle_number: string;
+  repair_type: string;
+  amount_text: string;
+  tax_text?: string;
+  common_text?: string;
+  tax_type: string;
+  labor_fee?: number;
+  parts_fee?: number;
+  common_expense?: number;
+  consumption_tax?: number;
+  total_amount?: number;
+};
+
+/** OCR取込時の原本データ */
+export type InvoiceOcrSnapshot = {
+  rawText: string;
+  extractionMode: "native_text" | "ocr_fallback" | "text" | "ai" | "legacy";
+  parsedAt: string;
+  vendor_name?: string;
+  lines: InvoiceOcrLineSnapshot[];
+  aiResponse?: unknown;
+};
+
+/** ユーザー編集後のスナップショット */
+export type InvoiceEditedSnapshot = {
+  updatedAt: string;
+  vendorName: string;
+  clientName: string;
+  billingMonth: string;
+  issueDate: string;
+  billType: BillType;
+  totalAmount: number;
+  maintenanceSubtotalExTax: number;
+  taxAmount: number;
+  expensesSubtotal: number;
+  memo: string;
+  lines: {
+    vehicleNumber: string;
+    maintenanceType?: MaintenanceType;
+    workDescription: string;
+    laborFee: number;
+    partsFee: number;
+    commonExpense: number;
+    consumptionTax: number;
+    totalAmount: number;
+    taxCategory?: string;
+  }[];
+};
 
 export type VehicleMaintenanceBill = {
   id: string;
@@ -201,7 +300,18 @@ export type VehicleMaintenanceBill = {
   createdAt: string;
   /** インポート元ファイル名 */
   sourceFileName: string;
+  /** OCR取込時の原本（編集しても保持） */
+  ocrOriginalData?: InvoiceOcrSnapshot;
+  /** 最終編集後のスナップショット（表示・監査用） */
+  editedData?: InvoiceEditedSnapshot;
 };
+
+/** 整備種別（車両別内訳の項目分類） */
+export type MaintenanceType =
+  | "車検"
+  | "3か月点検（法定）"
+  | "一般整備"
+  | "その他";
 
 /**
  * 車両別経費明細レコード
@@ -226,6 +336,10 @@ export type VehicleExpenseRecord = {
   partsFee: number;
   /** 諸費用（円） */
   commonExpense: number;
+  /** 行の消費税額（円） */
+  consumptionTax?: number;
+  /** 整備種別 */
+  maintenanceType?: MaintenanceType;
   /** 合計金額（円） */
   totalAmount: number;
   /** 親請求書 ID（VehicleMaintenanceBill.id） */
@@ -271,6 +385,7 @@ export const DEFAULT_MASTERS: MasterData = {
   defaultPartTimeDaily: 10000,
   defaultDispatchDaily: 15000,
   mappingRules: [],
+  allocationExpenses: [],
 };
 
 export type SystemBackup = {
@@ -278,4 +393,73 @@ export type SystemBackup = {
   exportedAt: string;
   records: DailyRecord[];
   masters: MasterData;
+};
+
+/** 社員台帳（社員マスタ.xlsx 由来の個人情報） */
+export type EmployeeDetail = {
+  /** Firestore ドキュメント ID（社員ID と同一） */
+  id: string;
+  employeeId: string;
+  name: string;
+  nameKana: string;
+  address: string;
+  /** YYYY-MM-DD */
+  birthDate: string;
+  hireDate: string;
+  appointmentDate: string;
+  licenseNumber: string;
+  /** 1=在籍中, 0=退職・非在籍 */
+  activeFlag: 0 | 1;
+  retirementReason: string;
+  updatedAt: string;
+};
+
+/** 車両台帳（車両マスタ.xlsx 由来） */
+export type VehicleDetail = {
+  /** Firestore ドキュメント ID（車両ID と同一） */
+  id: string;
+  vehicleId: string;
+  /** 社内管理用コード（例: 38-12） */
+  vehicleCode: string;
+  /** ナンバープレート（例: 京都100い38-12） */
+  plateNumber: string;
+  tonnageDisplay: string;
+  vehicleName: string;
+  modelType: string;
+  /** YYYY-MM-DD */
+  inspectionExpiry: string;
+  /** 和暦表記（例: H23.03） */
+  firstYear: string;
+  loadCapacity: number;
+  grossWeight: number;
+  registeredDate: string;
+  scrappedDate: string;
+  heightMm?: number;
+  lengthMm?: number;
+  widthMm?: number;
+  updatedAt: string;
+};
+
+/** 業務単価の改定履歴 */
+export type JobPriceHistoryEntry = {
+  /** 契約単価（円） */
+  price: number;
+  /** 適用開始日 YYYY-MM-DD */
+  effectiveFrom: string;
+  note?: string;
+};
+
+/** 業務台帳（業務マスタ.xlsx 由来） */
+export type JobDetail = {
+  /** Firestore ドキュメント ID（業務ID と同一） */
+  id: string;
+  jobId: string;
+  shipperName: string;
+  jobName: string;
+  /** 最新の契約単価（円）— 一覧表示用 */
+  revenue: number;
+  /** 単価改定履歴 */
+  priceHistory: JobPriceHistoryEntry[];
+  notes: string;
+  updatedAt: string;
 };

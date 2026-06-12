@@ -18,3 +18,20 @@ export function userVehicleExpensesPath(uid: string): string {
 export function userMetaPath(uid: string): string {
   return `users/${uid}/meta/app`;
 }
+
+export function userEmployeeDetailsPath(uid: string): string {
+  return `users/${uid}/employee_details`;
+}
+
+export function userVehiclesPath(uid: string): string {
+  return `users/${uid}/vehicles`;
+}
+
+export function userJobsPath(uid: string): string {
+  return `users/${uid}/jobs`;
+}
+
+/** Amazon実績（生産性・経費管理） */
+export function userAmazonPerformanceExpensesPath(uid: string): string {
+  return `users/${uid}/amazonPerformanceExpenses`;
+}

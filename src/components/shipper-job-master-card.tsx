@@ -108,7 +108,7 @@ export function ShipperJobMasterCard({
               <div className="space-y-2">
                 <Label>荷主名</Label>
                 <Select
-                  value={activeShipper}
+                  value={activeShipper ?? ""}
                   onValueChange={(v) => setSelectedShipper(v ?? "")}
                 >
                   <SelectTrigger className="w-full">

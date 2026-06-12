@@ -34,6 +34,7 @@ export function createMay2026Masters(): MasterData {
     defaultPartTimeDaily: 15000,
     defaultDispatchDaily: 15000,
     mappingRules: [],
+    allocationExpenses: [],
   };
 }
 

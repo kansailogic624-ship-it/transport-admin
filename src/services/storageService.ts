@@ -97,6 +97,8 @@ class LocalStorageStorageService implements StorageService {
         defaultDispatchDaily:
           stored.defaultDispatchDaily ?? DEFAULT_MASTERS.defaultDispatchDaily,
         mappingRules: stored.mappingRules ?? DEFAULT_MASTERS.mappingRules,
+        allocationExpenses:
+          stored.allocationExpenses ?? DEFAULT_MASTERS.allocationExpenses,
       };
     }
 

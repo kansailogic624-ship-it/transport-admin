@@ -296,6 +296,10 @@ export function importTypeLabel(type: ImportType): string {
 
       return "FileMaker・日報 融合";
 
+    case "amazonPerformance":
+
+      return "Amazon実績CSV";
+
     default:
 
       return type;

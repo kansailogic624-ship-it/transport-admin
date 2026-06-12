@@ -12,7 +12,7 @@ type ImportDropZoneProps = {
   onClear: () => void;
   accept?: string;
   minHeightClass?: string;
-  accent?: "default" | "sky" | "amber" | "indigo";
+  accent?: "default" | "sky" | "amber" | "indigo" | "violet";
 };
 
 const accentRing: Record<NonNullable<ImportDropZoneProps["accent"]>, string> = {
@@ -20,6 +20,7 @@ const accentRing: Record<NonNullable<ImportDropZoneProps["accent"]>, string> = {
   sky: "border-sky-500 bg-sky-100/50 dark:bg-sky-950/40",
   amber: "border-amber-500 bg-amber-100/50 dark:bg-amber-950/40",
   indigo: "border-indigo-500 bg-indigo-100/50 dark:bg-indigo-950/40",
+  violet: "border-violet-500 bg-violet-100/50 dark:bg-violet-950/40",
 };
 
 export function ImportDropZone({

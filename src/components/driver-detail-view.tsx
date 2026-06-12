@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight, User } from "lucide-react";
 import { AlertList } from "@/components/alert-list";
 import { DayStatusBadge } from "@/components/day-status-badge";
@@ -38,13 +38,16 @@ import {
   ReportStatusSelect,
 } from "@/components/report-status-control";
 import { formatYen } from "@/lib/currency-format";
-import type { DailyRecord, DailyReportStatus } from "@/lib/types";
+import { loadEmployeeDetails } from "@/services/firestore-storage";
+import type { DailyRecord, DailyReportStatus, EmployeeDetail } from "@/lib/types";
 
 const DRIVER_TABLE_COLS = 6;
 
 type DriverDetailViewProps = {
   records: DailyRecord[];
   onRecordsChange?: (records: DailyRecord[]) => void;
+  /** 集計タブ内に埋め込む場合は対象月ピッカーを非表示 */
+  embedded?: boolean;
 };
 
 type DriverDayDetailTableProps = {
@@ -315,14 +318,30 @@ function DriverDayDetailTable({
 export function DriverDetailView({
   records,
   onRecordsChange,
+  embedded = false,
 }: DriverDetailViewProps) {
   const { selectedYearMonth: yearMonth, setSelectedYearMonth: setYearMonth } =
     useSelectedDate();
   const [expandedDriver, setExpandedDriver] = useState<string | null>(null);
+  const [employees, setEmployees] = useState<EmployeeDetail[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadEmployeeDetails()
+      .then((rows) => {
+        if (!cancelled) setEmployees(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setEmployees([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const summaries = useMemo(
-    () => buildDriverMonthSummaries(records, yearMonth),
-    [records, yearMonth],
+    () => buildDriverMonthSummaries(records, yearMonth, { employees }),
+    [records, yearMonth, employees],
   );
 
   const expandedDayRows = useMemo(() => {
@@ -355,25 +374,29 @@ export function DriverDetailView({
 
   return (
     <div className="flex w-full max-w-full min-w-0 flex-col gap-4 overflow-hidden">
-      <div className="flex shrink-0 flex-wrap items-end gap-4 rounded-lg border bg-card p-4">
-        <div className="space-y-2">
-          <Label htmlFor="driver-month">対象月</Label>
-          <Input
-            id="driver-month"
-            type="month"
-            value={yearMonth}
-            onChange={(e) => setYearMonth(e.target.value)}
-            className="w-[180px]"
-          />
+      {!embedded && (
+        <div className="flex shrink-0 flex-wrap items-end gap-4 rounded-lg border bg-card p-4">
+          <div className="space-y-2">
+            <Label htmlFor="driver-month">対象月</Label>
+            <Input
+              id="driver-month"
+              type="month"
+              value={yearMonth}
+              onChange={(e) => setYearMonth(e.target.value)}
+              className="w-[180px]"
+            />
+          </div>
+          <Badge variant="secondary">{summaries.length} 名が稼働</Badge>
         </div>
-        <Badge variant="secondary">{summaries.length} 名が稼働</Badge>
-      </div>
+      )}
 
       <Card className="flex min-h-0 w-full max-w-full flex-col overflow-hidden">
         <CardHeader className="shrink-0 pb-3">
           <CardTitle className="text-lg">ドライバー一覧</CardTitle>
           <CardDescription>
-            名前をクリックすると、その行の直下に日別の運行明細が展開されます
+            {embedded
+              ? `${summaries.length} 名が稼働 — 対象月は画面上部で変更できます`
+              : "名前をクリックすると、その行の直下に日別の運行明細が展開されます"}
           </CardDescription>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-auto p-0 pb-4">
