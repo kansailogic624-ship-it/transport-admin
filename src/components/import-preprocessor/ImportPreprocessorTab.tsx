@@ -12,8 +12,10 @@ import {
   applyFmWarningDismiss,
   applyFmWarningHold,
   applyFmWarningReopen,
+  applyShigaDeliveryManualEdit,
   bulkUpdateByCompanyOriginal,
   preprocessImportFile,
+  revertShigaDeliveryRecordToImport,
   setRecordsWarningStatus,
   updatePreprocessRecord,
   type FmReviewDecisionScope,
@@ -23,6 +25,7 @@ import {
   type PreprocessResult,
   type PreprocessSourceType,
   type PreprocessWarningStatus,
+  type ShigaDeliveryManualEditInput,
 } from "@/lib/import-preprocessor";
 import type { RecordEditPatch } from "@/lib/import-preprocessor/record-state";
 import type { MasterData } from "@/lib/types";
@@ -63,17 +66,52 @@ import {
 } from "@/lib/import-preprocessor/fm-employee-schedule/record-revert";
 import type { FmManualRecordEditInput } from "@/lib/import-preprocessor/fm-employee-schedule/manual-record-edit";
 import { ReviewFixPanel } from "./ReviewFixPanel";
+import { ShigaDeliveryDetailDialog } from "./ShigaDeliveryDetailDialog";
+import { ShigaDeliveryReviewTable } from "./ShigaDeliveryReviewTable";
+import { ShigaDeliverySummaryPanel } from "./ShigaDeliverySummaryPanel";
+import { ShigaFmReconciliationSection } from "./ShigaFmReconciliationSection";
+import {
+  PENDING_SHIGA_FM_CONTRACT_PARTNER_ID_KEY,
+  PENDING_SHIGA_FM_SUB_TAB_KEY,
+  PENDING_SHIGA_FM_WORKSPACE_MODE_KEY,
+  type ShigaFmPendingSubTab,
+} from "@/lib/shiga-fm-navigation";
+
+import type { PartnerDetailSectionId } from "@/lib/partner-ledger-navigation";
+import type { ShipperDetailSectionId } from "@/lib/shipper-ledger-navigation";
+
+type PreprocessWorkspaceMode = "single" | "shiga_fm_reconcile";
 
 type ImportPreprocessorTabProps = {
   masters?: MasterData | null;
   initialSourceType?: PreprocessSourceType | null;
   onInitialSourceTypeApplied?: () => void;
+  initialWorkspaceMode?: PreprocessWorkspaceMode | null;
+  initialShigaFmSubTab?: ShigaFmPendingSubTab | null;
+  initialPartnerId?: string | null;
+  onInitialShigaFmNavigationApplied?: () => void;
+  onNavigateToPartnerDetail?: (
+    partnerId: string,
+    section?: PartnerDetailSectionId,
+  ) => void;
+  onNavigateToPartnerLedger?: () => void;
+  onNavigateToShipperDetail?: (
+    shipperId: string,
+    section?: ShipperDetailSectionId,
+  ) => void;
 };
 
 export function ImportPreprocessorTab({
   masters,
   initialSourceType,
   onInitialSourceTypeApplied,
+  initialWorkspaceMode,
+  initialShigaFmSubTab,
+  initialPartnerId,
+  onInitialShigaFmNavigationApplied,
+  onNavigateToPartnerDetail,
+  onNavigateToPartnerLedger,
+  onNavigateToShipperDetail,
 }: ImportPreprocessorTabProps) {
   const [sourceType, setSourceType] = useState<PreprocessSourceType>("amazon");
   const [files, setFiles] = useState<File[]>([]);
@@ -95,6 +133,58 @@ export function ImportPreprocessorTab({
   );
   const [fmFeedback, setFmFeedback] = useState<FmActionFeedback | null>(null);
   const [fmSaveFeedback, setFmSaveFeedback] = useState<string | null>(null);
+  const [shigaEditRecordId, setShigaEditRecordId] = useState<string | null>(null);
+  const [shigaFeedback, setShigaFeedback] = useState<FmActionFeedback | null>(
+    null,
+  );
+  const [shigaSaveFeedback, setShigaSaveFeedback] = useState<string | null>(
+    null,
+  );
+  const [workspaceMode, setWorkspaceMode] =
+    useState<PreprocessWorkspaceMode>(
+      initialWorkspaceMode ?? "single",
+    );
+  const [shigaFmSubTab, setShigaFmSubTab] = useState<ShigaFmPendingSubTab | null>(
+    initialShigaFmSubTab ?? null,
+  );
+  const [shigaFmPartnerId, setShigaFmPartnerId] = useState<string | null>(
+    initialPartnerId ?? null,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const pendingMode = sessionStorage.getItem(
+      PENDING_SHIGA_FM_WORKSPACE_MODE_KEY,
+    );
+    if (pendingMode === "shiga_fm_reconcile") {
+      setWorkspaceMode("shiga_fm_reconcile");
+      sessionStorage.removeItem(PENDING_SHIGA_FM_WORKSPACE_MODE_KEY);
+    }
+    const pendingSubTab = sessionStorage.getItem(PENDING_SHIGA_FM_SUB_TAB_KEY);
+    if (pendingSubTab) {
+      setShigaFmSubTab(pendingSubTab as ShigaFmPendingSubTab);
+      sessionStorage.removeItem(PENDING_SHIGA_FM_SUB_TAB_KEY);
+    }
+    const pendingPartnerId = sessionStorage.getItem(
+      PENDING_SHIGA_FM_CONTRACT_PARTNER_ID_KEY,
+    );
+    if (pendingPartnerId) {
+      setShigaFmPartnerId(pendingPartnerId);
+      sessionStorage.removeItem(PENDING_SHIGA_FM_CONTRACT_PARTNER_ID_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (initialWorkspaceMode) {
+      setWorkspaceMode(initialWorkspaceMode);
+    }
+    if (initialShigaFmSubTab) {
+      setShigaFmSubTab(initialShigaFmSubTab);
+    }
+    if (initialPartnerId) {
+      setShigaFmPartnerId(initialPartnerId);
+    }
+  }, [initialWorkspaceMode, initialShigaFmSubTab, initialPartnerId]);
 
   const fmWarningQueue =
     result?.sourceType === "filemaker_employee_schedule"
@@ -126,6 +216,9 @@ export function ImportPreprocessorTab({
     setFmEditContext(null);
     setFmFeedback(null);
     setFmSaveFeedback(null);
+    setShigaEditRecordId(null);
+    setShigaFeedback(null);
+    setShigaSaveFeedback(null);
   }, []);
 
   useEffect(() => {
@@ -176,6 +269,16 @@ export function ImportPreprocessorTab({
         setStatusMessage(
           `前処理完了: ${processed.totalRows}行 / 社員日${days} / 売上合計¥${sales.toLocaleString()} / 未解決 社員${totals?.unresolvedEmployeeCount ?? 0}・車両${totals?.unresolvedVehicleCount ?? 0}・荷主${totals?.unresolvedShipperCount ?? 0}・業務${totals?.unresolvedJobCount ?? 0} / 警告${processed.warningRows}`,
         );
+      } else if (processed.sourceType === "shiga_store_delivery") {
+        const totals = processed.shigaDeliveryTotals;
+        setStatusMessage(
+          `前処理完了: 明細${processed.totalRows}件 / 日数${totals?.importedDayCount ?? 0} / 支払合計¥${(totals?.payTotal ?? 0).toLocaleString()} / 不一致${(totals?.dailyMismatchCount ?? 0) + (totals?.monthlyMismatchCount ?? 0)} / スキップ${totals?.skippedRowCount ?? 0}`,
+        );
+        setShigaFeedback({
+          message: "滋賀店配データの取込が完了しました",
+          detail: `${processed.totalRows} 件の明細を読み込みました`,
+          tone: "success",
+        });
       } else {
         const pending = processed.warningStatusSummary?.pending ?? 0;
         const dup = processed.duplicateRows;
@@ -412,6 +515,64 @@ export function ImportPreprocessorTab({
     [],
   );
 
+  const handleOpenShigaDetail = useCallback(
+    (recordId: string) => {
+      setShigaEditRecordId(recordId);
+      setShigaSaveFeedback(null);
+      const row = result?.shigaDeliveryRecords?.find((r) => r.id === recordId);
+      setLastModifiedRecordId(recordId);
+      setShigaFeedback({
+        message: "明細を開きました",
+        detail: row
+          ? `${row.businessDate} / ${row.courseName} / 行 ${row.sourceRowNumber}`
+          : undefined,
+        tone: "info",
+      });
+    },
+    [result?.shigaDeliveryRecords],
+  );
+
+  const handleShigaWarningClick = useCallback(
+    (record: NonNullable<PreprocessResult["shigaDeliveryRecords"]>[number]) => {
+      setShigaFeedback({
+        message: `警告を表示: ${record.courseName}`,
+        detail: record.warningMessages.join(" / ") || "詳細は明細を確認してください",
+        tone: "warn",
+      });
+    },
+    [],
+  );
+
+  const handleShigaManualEdit = useCallback(
+    (recordId: string, edit: ShigaDeliveryManualEditInput) => {
+      setResult((prev) => {
+        if (!prev || prev.sourceType !== "shiga_store_delivery") return prev;
+        return applyShigaDeliveryManualEdit({ result: prev, recordId, edit });
+      });
+      setLastModifiedRecordId(recordId);
+      setShigaSaveFeedback("保存しました。サマリーを再計算しました");
+      setShigaFeedback({
+        message: "保存しました",
+        tone: "success",
+      });
+      setStatusMessage("滋賀店配明細を保存しました（メモリのみ）");
+    },
+    [],
+  );
+
+  const handleRevertShigaRecord = useCallback((recordId: string) => {
+    if (!window.confirm("この明細を取込直後の状態に戻しますか？")) return;
+    setResult((prev) => {
+      if (!prev || prev.sourceType !== "shiga_store_delivery") return prev;
+      return revertShigaDeliveryRecordToImport({ result: prev, recordId });
+    });
+    setShigaSaveFeedback(null);
+    setShigaFeedback({
+      message: "取込直後の状態に戻しました",
+      tone: "warn",
+    });
+  }, []);
+
   const handleBulkApply = useCallback(
     (
       companyOriginal: string,
@@ -451,6 +612,41 @@ export function ImportPreprocessorTab({
         </span>
       </div>
 
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant={workspaceMode === "single" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setWorkspaceMode("single")}
+        >
+          単一ファイル前処理
+        </Button>
+        <Button
+          type="button"
+          variant={workspaceMode === "shiga_fm_reconcile" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setWorkspaceMode("shiga_fm_reconcile")}
+        >
+          滋賀店配×FM突合
+        </Button>
+      </div>
+
+      {workspaceMode === "shiga_fm_reconcile" ? (
+        <ShigaFmReconciliationSection
+          masters={masters}
+          initialSubTab={shigaFmSubTab}
+          initialPartnerId={shigaFmPartnerId}
+          onInitialNavigationApplied={() => {
+            setShigaFmSubTab(null);
+            setShigaFmPartnerId(null);
+            onInitialShigaFmNavigationApplied?.();
+          }}
+          onNavigateToPartnerDetail={onNavigateToPartnerDetail}
+          onNavigateToPartnerLedger={onNavigateToPartnerLedger}
+          onNavigateToShipperDetail={onNavigateToShipperDetail}
+        />
+      ) : (
+      <>
       <section className="space-y-4">
         <FileUploadPanel
           sourceType={sourceType}
@@ -501,7 +697,9 @@ export function ImportPreprocessorTab({
       </div>
       </section>
 
-      {result && result.sourceType !== "filemaker_employee_schedule" && (
+      {result &&
+        result.sourceType !== "filemaker_employee_schedule" &&
+        result.sourceType !== "shiga_store_delivery" && (
         <PreprocessStickyNav
           result={result}
           onNavigate={setReviewTab}
@@ -515,21 +713,42 @@ export function ImportPreprocessorTab({
         />
       )}
 
-      <PreprocessSummarySection
-        result={result}
-        fmActiveFilter={
-          result?.sourceType === "filemaker_employee_schedule"
-            ? fmFilter
-            : undefined
-        }
-        onFmFilterChange={
-          result?.sourceType === "filemaker_employee_schedule"
-            ? setFmFilter
-            : undefined
-        }
-      />
-      {result?.sourceType !== "filemaker_employee_schedule" && (
+      {result?.sourceType === "shiga_store_delivery" && (
+        <FmActionFeedbackBanner
+          feedback={shigaFeedback}
+          onDismiss={() => setShigaFeedback(null)}
+        />
+      )}
+
+      {result?.sourceType === "shiga_store_delivery" ? (
+        <ShigaDeliverySummaryPanel result={result} />
+      ) : (
+        <PreprocessSummarySection
+          result={result}
+          fmActiveFilter={
+            result?.sourceType === "filemaker_employee_schedule"
+              ? fmFilter
+              : undefined
+          }
+          onFmFilterChange={
+            result?.sourceType === "filemaker_employee_schedule"
+              ? setFmFilter
+              : undefined
+          }
+        />
+      )}
+      {result?.sourceType !== "filemaker_employee_schedule" &&
+        result?.sourceType !== "shiga_store_delivery" && (
         <PreprocessAmountSection result={result} />
+      )}
+
+      {result?.sourceType === "shiga_store_delivery" && (
+        <ShigaDeliveryReviewTable
+          result={result}
+          lastOpenedRecordId={lastModifiedRecordId}
+          onOpenDetail={handleOpenShigaDetail}
+          onWarningClick={handleShigaWarningClick}
+        />
       )}
 
       <FmScheduleReviewTable
@@ -584,7 +803,23 @@ export function ImportPreprocessorTab({
         }}
       />
 
-      {result?.sourceType !== "filemaker_employee_schedule" && (
+      <ShigaDeliveryDetailDialog
+        record={
+          result?.sourceType === "shiga_store_delivery"
+            ? (result.shigaDeliveryRecords?.find(
+                (r) => r.id === shigaEditRecordId,
+              ) ?? null)
+            : null
+        }
+        open={Boolean(shigaEditRecordId)}
+        saveFeedback={shigaSaveFeedback}
+        onClose={() => setShigaEditRecordId(null)}
+        onSave={handleShigaManualEdit}
+        onRevert={handleRevertShigaRecord}
+      />
+
+      {result?.sourceType !== "filemaker_employee_schedule" &&
+        result?.sourceType !== "shiga_store_delivery" && (
       <ReviewFixPanel
         result={result}
         activeTab={reviewTab}
@@ -595,14 +830,16 @@ export function ImportPreprocessorTab({
       />
       )}
 
-      {result?.sourceType !== "filemaker_employee_schedule" && (
+      {result?.sourceType !== "filemaker_employee_schedule" &&
+        result?.sourceType !== "shiga_store_delivery" && (
         <ImportPreviewTable
           result={result}
           onEditRow={(id) => setEditingId(id)}
         />
       )}
 
-      {result?.sourceType !== "filemaker_employee_schedule" && (
+      {result?.sourceType !== "filemaker_employee_schedule" &&
+        result?.sourceType !== "shiga_store_delivery" && (
         <NormalizeResultTable result={result} />
       )}
       <ExportButtons result={result} />
@@ -613,6 +850,8 @@ export function ImportPreprocessorTab({
         onClose={() => setEditingId(null)}
         onSave={handleSaveEdit}
       />
+      </>
+      )}
     </div>
   );
 }

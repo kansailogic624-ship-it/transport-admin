@@ -35,3 +35,28 @@ export function userJobsPath(uid: string): string {
 export function userAmazonPerformanceExpensesPath(uid: string): string {
   return `users/${uid}/amazonPerformanceExpenses`;
 }
+
+/** 滋賀店配×FM 傭車契約単価マスタ（移行期間のみ読取互換） */
+export function userPartnerContractRatesPath(uid: string): string {
+  return `users/${uid}/partner_contract_rates`;
+}
+
+/** 協力会社支払契約 */
+export function userPartnerPaymentContractsPath(uid: string): string {
+  return `users/${uid}/partner_payment_contracts`;
+}
+
+/** 荷主請求契約 */
+export function userShipperBillingContractsPath(uid: string): string {
+  return `users/${uid}/shipper_billing_contracts`;
+}
+
+/** 滋賀店配×FM 未登録スロット手入力 */
+export function userShigaFmSlotAssignmentsPath(uid: string): string {
+  return `users/${uid}/shiga_fm_slot_assignments`;
+}
+
+/** 滋賀店配×FM 月度セッション（取込・突合結果） */
+export function userShigaFmSessionsPath(uid: string): string {
+  return `users/${uid}/shiga_fm_sessions`;
+}

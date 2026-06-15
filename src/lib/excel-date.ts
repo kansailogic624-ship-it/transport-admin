@@ -1,3 +1,15 @@
+const ISO_BUSINESS_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 営業日として有効な YYYY-MM-DD 形式か */
+export function isIsoBusinessDate(value: string): boolean {
+  return ISO_BUSINESS_DATE_RE.test(value.trim());
+}
+
+/** 社員名照合用: 半角・全角スペースを除去 */
+export function normalizePersonName(name: string): string {
+  return name.replace(/[\s\u3000]+/g, "").trim();
+}
+
 export function parseExcelDate(value: unknown): string {
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {

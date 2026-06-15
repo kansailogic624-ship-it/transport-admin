@@ -11,6 +11,12 @@ import type {
   FmReviewDecisionRule,
   FmScheduleAmountTotals,
 } from "./fm-employee-schedule/types";
+import type {
+  ShigaDeliveryAmountTotals,
+  ShigaDeliveryDaySummary,
+  ShigaDeliveryExportRecord,
+  ShigaDeliveryStagingRecord,
+} from "./shiga-delivery/types";
 
 export const PREPROCESS_SCHEMA_VERSION = "1.0" as const;
 
@@ -23,6 +29,7 @@ export type PreprocessSourceType =
   | "vehicle_expense"
   | "fuel"
   | "toll"
+  | "shiga_store_delivery"
   | "other";
 
 export type PreprocessIssue = {
@@ -207,6 +214,12 @@ export type PreprocessResult = {
   fmReviewDecisionRules?: FmReviewDecisionRule[];
   /** FM社員スケジュール専用: セッション内の判断変更履歴 */
   fmReviewDecisionHistory?: import("./fm-employee-schedule/record-snapshot").FmReviewDecisionHistoryEntry[];
+  /** 滋賀店配専用: 明細行 */
+  shigaDeliveryRecords?: ShigaDeliveryStagingRecord[];
+  /** 滋賀店配専用: 日次サマリー */
+  shigaDeliveryDaySummaries?: ShigaDeliveryDaySummary[];
+  /** 滋賀店配専用: 集計 */
+  shigaDeliveryTotals?: ShigaDeliveryAmountTotals;
 };
 
 /** FM配車 金額・区分集計 */
@@ -232,9 +245,12 @@ export type PreprocessExportJson = {
     duplicateRows: number;
     warningStatusSummary?: PreprocessWarningStatusSummary;
     fmScheduleTotals?: FmScheduleAmountTotals;
+    shigaDeliveryTotals?: ShigaDeliveryAmountTotals;
   };
   records: PreprocessedRecord[];
   fmScheduleRecords?: FmEmployeeScheduleStagingRecord[];
+  shigaDeliveryRecords?: ShigaDeliveryExportRecord[];
+  shigaDeliveryDaySummaries?: ShigaDeliveryDaySummary[];
   fmEmployeeDaySummaries?: FmEmployeeDaySummary[];
   fmOperationSummaries?: FmOperationSummary[];
   warnings: PreprocessIssue[];
@@ -256,5 +272,6 @@ export const PREPROCESS_SOURCE_LABELS: Record<PreprocessSourceType, string> = {
   vehicle_expense: "車両経費",
   fuel: "燃料費",
   toll: "高速代",
+  shiga_store_delivery: "滋賀店配データ",
   other: "その他",
 };

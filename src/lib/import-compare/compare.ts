@@ -45,6 +45,10 @@ const PIPELINE_META: Record<
     oldFile: "(日次入力に直接取込なし)",
     newFile: "src/lib/import-preprocessor/parsers/vehicle-expense-parser.ts",
   },
+  shiga_store_delivery: {
+    oldFile: "(新規・旧パイプラインなし)",
+    newFile: "src/lib/import-preprocessor/parsers/shiga-delivery-parser.ts",
+  },
   other: {
     oldFile: "(なし)",
     newFile: "src/lib/import-preprocessor/parsers/vehicle-expense-parser.ts",

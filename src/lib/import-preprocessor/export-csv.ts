@@ -50,7 +50,70 @@ const CSV_HEADERS = [
   "errors",
 ] as const;
 
+const SHIGA_CSV_HEADERS = [
+  "id",
+  "sourceRowNumber",
+  "monthPeriod",
+  "closingMonth",
+  "businessDate",
+  "weekday",
+  "vendorCode",
+  "vendorName",
+  "vehicleType",
+  "courseId",
+  "courseName",
+  "routeName",
+  "joinKey",
+  "unitCount",
+  "freightAmount",
+  "overtimeHours",
+  "overtimePayAmount",
+  "freightPlusOvertimeAmount",
+  "tollAmount",
+  "coursePayTotal",
+  "status",
+  "warningFlags",
+  "isManuallyEdited",
+] as const;
+
+function buildShigaDeliveryCsv(result: PreprocessResult): string {
+  const lines = [SHIGA_CSV_HEADERS.join(",")];
+  for (const record of result.shigaDeliveryRecords ?? []) {
+    const row = [
+      record.id,
+      record.sourceRowNumber,
+      record.monthPeriod,
+      record.closingMonth,
+      record.businessDate,
+      record.weekday,
+      record.vendorCode,
+      record.vendorName,
+      record.vehicleType,
+      record.courseId,
+      record.courseName,
+      record.routeName,
+      record.joinKey,
+      record.unitCount,
+      record.freightAmount,
+      record.overtimeHours,
+      record.overtimePayAmount,
+      record.freightPlusOvertimeAmount,
+      record.tollAmount,
+      record.coursePayTotal,
+      record.status,
+      record.warningFlags.join("; "),
+      record.isManuallyEdited ? "true" : "false",
+    ].map(escapeCsvCell);
+    lines.push(row.join(","));
+  }
+  return lines.join("\n");
+}
+
 export function buildPreprocessCsv(result: PreprocessResult): string {
+  if (result.sourceType === "shiga_store_delivery") {
+    return buildShigaDeliveryCsv(result);
+  }
+
   const lines = [CSV_HEADERS.join(",")];
 
   for (const record of getExportableRecords(result.records)) {

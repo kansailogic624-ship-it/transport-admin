@@ -16,6 +16,7 @@ import { parseFilemakerDispatchPreprocessorFile } from "./parsers/filemaker-disp
 import { parseFilemakerEmployeeSchedulePreprocessorFile } from "./parsers/filemaker-employee-schedule-parser";
 import { parseRollCallPreprocessorFile } from "./parsers/roll-call-parser";
 import { parseDrivingReportPreprocessorFile } from "./parsers/driving-report-parser";
+import { parseShigaDeliveryPreprocessorFile } from "./parsers/shiga-delivery-parser";
 import type {
   PreprocessNormalizeContext,
   PreprocessResult,
@@ -127,6 +128,32 @@ export type {
   FmReviewDecisionRule,
   FmScheduleWarningCode,
 } from "./fm-employee-schedule/types";
+export {
+  applyShigaDeliveryManualEdit,
+  revertShigaDeliveryRecordToImport,
+} from "./shiga-delivery/record-edit-session";
+export type { ShigaDeliveryManualEditInput } from "./shiga-delivery/record-edit-session";
+export type {
+  ShigaDeliveryStagingRecord,
+  ShigaDeliveryAmountTotals,
+  ShigaDeliveryCourseId,
+  ShigaDeliveryWarningCode,
+} from "./shiga-delivery/types";
+export {
+  SHIGA_DELIVERY_WARNING_LABELS,
+  SHIGA_DELIVERY_STATUS_LABELS,
+} from "./shiga-delivery/types";
+export { buildShigaFmReconciliationResult } from "./shiga-fm-reconciliation/build-result";
+export type {
+  ShigaFmInputMode,
+  ShigaFmReconcileDiagnostics,
+  ShigaFmReconciliationResult,
+  ShigaFmReconciliationRow,
+  ShigaFmMatchStatus,
+} from "./shiga-fm-reconciliation/types";
+export {
+  SHIGA_FM_MATCH_STATUS_LABELS,
+} from "./shiga-fm-reconciliation/types";
 
 export function buildNormalizeContextFromMasters(
   masters?: MasterData | null,
@@ -176,6 +203,8 @@ export async function preprocessImportFile(
       return parseFuelPreprocessorFile(buffer, file.name, ctx);
     case "toll":
       return parseTollPreprocessorFile(buffer, file.name, ctx);
+    case "shiga_store_delivery":
+      return parseShigaDeliveryPreprocessorFile(buffer, file.name);
     case "other":
       return parseOtherPreprocessorFile(buffer, file.name, ctx);
     default:

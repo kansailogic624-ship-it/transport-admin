@@ -1,3 +1,6 @@
+import type { PartnerCompanyProfile } from "./partner-company-types";
+import type { ShipperCompanyProfile } from "./shipper-company-types";
+
 export type RunType = "own" | "partner";
 
 /** 日報提出ステータス */
@@ -149,8 +152,12 @@ export type AllocationExpenseEntry = {
 
 export type MasterData = {
   drivers: string[];
-  /** 協力会社（傭車先） */
+  /** 協力会社（傭車先）— partnerProfiles の名前と同期 */
   partners: string[];
+  /** 協力会社プロファイル（協力会社台帳） */
+  partnerProfiles?: PartnerCompanyProfile[];
+  /** 荷主プロファイル（荷主台帳） */
+  shipperProfiles?: ShipperCompanyProfile[];
   vehicles: string[];
   shippers: string[];
   /** 荷主名 → その荷主で選べる業務名の一覧 */
@@ -372,6 +379,7 @@ export const DEFAULT_DRIVERS = [
 export const DEFAULT_MASTERS: MasterData = {
   drivers: [...DEFAULT_DRIVERS],
   partners: ["〇〇運輸", "▲▲ロジスティクス"],
+  partnerProfiles: [],
   vehicles: ["品川500あ1234", "品川500い5678"],
   shippers: ["株式会社ABC物流", "東京食品運輸"],
   shipperJobs: {

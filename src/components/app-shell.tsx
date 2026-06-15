@@ -35,6 +35,26 @@ import {
 import { SelectedDateProvider } from "@/contexts/selected-date-context";
 import type { RecordsPersistOptions } from "@/lib/records-persist";
 import type { DailyRecord, MasterData, VehicleExpenseRecord } from "@/lib/types";
+import { ensurePartnerProfiles } from "@/lib/partner-company-utils";
+import { ensureShipperProfiles } from "@/lib/shipper-company-utils";
+import {
+  PENDING_MASTER_REGISTRY_TAB_KEY,
+} from "@/lib/master-registry-navigation";
+import {
+  PENDING_PARTNER_DETAIL_ID_KEY,
+  PENDING_PARTNER_DETAIL_SECTION_KEY,
+  type PartnerDetailSectionId,
+} from "@/lib/partner-ledger-navigation";
+import {
+  PENDING_SHIPPER_DETAIL_ID_KEY,
+  PENDING_SHIPPER_DETAIL_SECTION_KEY,
+  type ShipperDetailSectionId,
+} from "@/lib/shipper-ledger-navigation";
+import {
+  PENDING_SHIGA_FM_CONTRACT_PARTNER_ID_KEY,
+  PENDING_SHIGA_FM_SUB_TAB_KEY,
+  PENDING_SHIGA_FM_WORKSPACE_MODE_KEY,
+} from "@/lib/shiga-fm-navigation";
 
 export function AppShell() {
   const { user, logOut } = useAuth();
@@ -48,6 +68,21 @@ export function AppShell() {
   const [activeTab, setActiveTab] = useState("daily");
   const [preprocessSourceType, setPreprocessSourceType] =
     useState<PreprocessSourceType | null>(null);
+  const [preprocessWorkspaceMode, setPreprocessWorkspaceMode] = useState<
+    "single" | "shiga_fm_reconcile" | null
+  >(null);
+  const [preprocessShigaFmSubTab, setPreprocessShigaFmSubTab] = useState<
+    "summary" | "details" | "issues" | "assignments" | "contracts" | null
+  >(null);
+  const [preprocessPartnerId, setPreprocessPartnerId] = useState<string | null>(
+    null,
+  );
+  const [partnerDetailId, setPartnerDetailId] = useState<string | null>(null);
+  const [partnerDetailSection, setPartnerDetailSection] =
+    useState<PartnerDetailSectionId | null>(null);
+  const [shipperDetailId, setShipperDetailId] = useState<string | null>(null);
+  const [shipperDetailSection, setShipperDetailSection] =
+    useState<ShipperDetailSectionId | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mastersSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRecordsRef = useRef<DailyRecord[] | null>(null);
@@ -79,8 +114,23 @@ export function AppShell() {
           loadVehicleExpenses(),
         ]);
       if (cancelled) return;
+      const normalizedMasters = ensureShipperProfiles(
+        ensurePartnerProfiles(loadedMasters),
+      );
       setRecords(loadedRecords);
-      setMasters(loadedMasters);
+      setMasters(normalizedMasters);
+      if (
+        normalizedMasters.partnerProfiles?.length &&
+        !loadedMasters.partnerProfiles?.length
+      ) {
+        void saveMasters(normalizedMasters).catch(console.error);
+      }
+      if (
+        normalizedMasters.shipperProfiles?.length &&
+        !loadedMasters.shipperProfiles?.length
+      ) {
+        void saveMasters(normalizedMasters).catch(console.error);
+      }
       setVehicleExpenses(loadedVehicleExpenses);
       setMounted(true);
       if (process.env.NODE_ENV !== "production") {
@@ -180,6 +230,39 @@ export function AppShell() {
       persistMasters(nextMasters);
     },
     [persistRecords, persistMasters],
+  );
+
+  const navigateToPartnerDetail = useCallback(
+    (partnerId: string, section: PartnerDetailSectionId = "contracts") => {
+      sessionStorage.setItem(PENDING_MASTER_REGISTRY_TAB_KEY, "partner-ledger");
+      sessionStorage.setItem(PENDING_PARTNER_DETAIL_ID_KEY, partnerId);
+      sessionStorage.setItem(PENDING_PARTNER_DETAIL_SECTION_KEY, section);
+      setPartnerDetailId(partnerId);
+      setPartnerDetailSection(section);
+      setActiveTab("masters");
+    },
+    [],
+  );
+
+  const navigateToPartnerLedger = useCallback(() => {
+    sessionStorage.setItem(PENDING_MASTER_REGISTRY_TAB_KEY, "partner-ledger");
+    sessionStorage.removeItem(PENDING_PARTNER_DETAIL_ID_KEY);
+    sessionStorage.removeItem(PENDING_PARTNER_DETAIL_SECTION_KEY);
+    setPartnerDetailId(null);
+    setPartnerDetailSection(null);
+    setActiveTab("masters");
+  }, []);
+
+  const navigateToShipperDetail = useCallback(
+    (shipperId: string, section: ShipperDetailSectionId = "billing") => {
+      sessionStorage.setItem(PENDING_MASTER_REGISTRY_TAB_KEY, "shipper-ledger");
+      sessionStorage.setItem(PENDING_SHIPPER_DETAIL_ID_KEY, shipperId);
+      sessionStorage.setItem(PENDING_SHIPPER_DETAIL_SECTION_KEY, section);
+      setShipperDetailId(shipperId);
+      setShipperDetailSection(section);
+      setActiveTab("masters");
+    },
+    [],
   );
 
   if (!mounted || !masters) {
@@ -294,6 +377,19 @@ export function AppShell() {
             onRecordsChange={persistRecords}
             onMastersChange={persistMasters}
             onRestore={handleRestore}
+            onNavigateToPartnerDetail={navigateToPartnerDetail}
+            initialPartnerDetailId={partnerDetailId}
+            initialPartnerDetailSection={partnerDetailSection}
+            onInitialPartnerDetailApplied={() => {
+              setPartnerDetailId(null);
+              setPartnerDetailSection(null);
+            }}
+            initialShipperDetailId={shipperDetailId}
+            initialShipperDetailSection={shipperDetailSection}
+            onInitialShipperDetailApplied={() => {
+              setShipperDetailId(null);
+              setShipperDetailSection(null);
+            }}
           />
         </TabsContent>
 
@@ -302,6 +398,17 @@ export function AppShell() {
             masters={masters}
             initialSourceType={preprocessSourceType}
             onInitialSourceTypeApplied={() => setPreprocessSourceType(null)}
+            initialWorkspaceMode={preprocessWorkspaceMode}
+            initialShigaFmSubTab={preprocessShigaFmSubTab}
+            initialPartnerId={preprocessPartnerId}
+            onInitialShigaFmNavigationApplied={() => {
+              setPreprocessWorkspaceMode(null);
+              setPreprocessShigaFmSubTab(null);
+              setPreprocessPartnerId(null);
+            }}
+            onNavigateToPartnerDetail={navigateToPartnerDetail}
+            onNavigateToPartnerLedger={navigateToPartnerLedger}
+            onNavigateToShipperDetail={navigateToShipperDetail}
           />
         </TabsContent>
 
